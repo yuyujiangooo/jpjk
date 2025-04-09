@@ -135,3 +135,45 @@ export async function getMonitoringRecordDetails(recordId: string) {
   }
 }
 
+export async function startMonitoring(id: string) {
+  try {
+    // 开始执行监控
+    const result = await runMonitoring(id);
+    
+    if (!result.success) {
+      throw new Error(result.error || "监控执行失败");
+    }
+    
+    revalidatePath("/");
+    
+    return { success: true };
+  } catch (error) {
+    console.error(`Error starting monitoring for item ${id}:`, error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : "开始监控失败" 
+    };
+  }
+}
+
+export async function stopMonitoring(id: string) {
+  try {
+    // 停止执行监控
+    const result = await db.stopMonitoring(id);
+    
+    if (!result) {
+      throw new Error("停止监控失败");
+    }
+    
+    revalidatePath("/");
+    
+    return { success: true };
+  } catch (error) {
+    console.error(`Error stopping monitoring for item ${id}:`, error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : "停止监控失败" 
+    };
+  }
+}
+

@@ -145,6 +145,14 @@ ${new_content}
     
     try {
       // 尝试解析JSON响应
+      // 检查是否是 Markdown 代码块格式
+      if (result.startsWith('```json')) {
+        // 提取代码块中的 JSON 内容
+        const matches = result.match(/```json\n([\s\S]*?)\n```/);
+        if (matches && matches[1]) {
+          result = matches[1].trim();
+        }
+      }
       return JSON.parse(result);
     } catch (parseError) {
       console.error('解析通义千问响应失败:', parseError);
@@ -251,7 +259,7 @@ export async function compareResultsWithQianwen(
           }
           
           // 格式化分析结果为Markdown
-          let formattedAnalysis = "**竞品分析结果**：\n\n";
+          let formattedAnalysis = "";
           
           // 添加变化区域
           if (analysis.changes && analysis.changes.length > 0) {

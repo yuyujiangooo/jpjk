@@ -3,6 +3,8 @@
 
 import nodemailer from 'nodemailer'
 import type { MonitoringItem, MonitoringRecord, MonitoringDetail } from "@/lib/monitoring"
+import DiffMatchPatch from 'diff-match-patch'
+import { exportMonitoringResults } from '@/lib/excel-service'
 
 // 创建邮件发送器
 const createTransporter = () => {
@@ -79,6 +81,11 @@ export async function sendMonitoringResultEmail(
       return false
     }
 
+    // 生成 Excel 文件
+    const excelBuffer = await exportMonitoringResults(item, record, details)
+    const date = new Date(record.date).toISOString().split('T')[0]
+    const fileName = `${item.name}-监控结果-${date}.xlsx`
+
     // 构建邮件内容
     const subject = `【产品监控通知】${item.name} - ${record.status}`
     
@@ -91,16 +98,17 @@ export async function sendMonitoringResultEmail(
       .details { margin-bottom: 20px; }
       .detail-item { background-color: #fff; border: 1px solid #e0e0e0; border-radius: 5px; padding: 15px; margin-bottom: 15px; }
       .detail-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
-      .detail-content { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px; }
-      .content-box { background-color: #f5f5f5; padding: 10px; border-radius: 3px; max-height: 200px; overflow-y: auto; }
+      .detail-content { margin-bottom: 15px; }
+      .content-box { background-color: #f5f5f5; padding: 10px; border-radius: 3px; max-height: 300px; overflow-y: auto; }
       .analysis { background-color: #edf7ff; padding: 15px; border-radius: 3px; margin-top: 10px; }
       .footer { text-align: center; margin-top: 30px; font-size: 14px; color: #666; }
       .btn { display: inline-block; background-color: #3A48FB; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
-      .tag { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 12px; font-weight: bold; }
+      .tag { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 12px; font-weight: bold; margin-left: 8px; }
       .tag-change { background-color: #fff3cd; color: #856404; }
-      .tag-new { background-color: #d4edda; color: #155724; }
-      .tag-delete { background-color: #f8d7da; color: #721c24; }
-      .tag-warning { background-color: #f8d7da; color: #721c24; }
+      .tag-important { background-color: #f8d7da; color: #721c24; }
+      .diff-delete { background-color: #ffdce0; color: #721c24; text-decoration: line-through; }
+      .diff-add { background-color: #cdffd8; color: #155724; }
+      .important-notice { background-color: #f8d7da; color: #721c24; padding: 10px; border-radius: 5px; margin-bottom: 10px; }
     `
     
     // 邮件头部
@@ -127,68 +135,93 @@ export async function sendMonitoringResultEmail(
     // 如果有变化，添加变化详情
     if (details && details.length > 0) {
       // 只显示有变化的详情
-      const changedDetails = details.filter(detail => 
-        ["变化", "新增", "删除", "警告"].includes(detail.action)
-      )
+      const changedDetails = details.filter(detail => detail.action === "内容变化")
       
       if (changedDetails.length > 0) {
-        content += `<div class="details"><h3>变化详情:</h3>`
+        // 添加重要变化提醒
+        const importantChanges = changedDetails.filter(detail => 
+          detail.analysis_result && (
+            detail.analysis_result.includes('重要变化') || 
+            detail.analysis_result.includes('注意') ||
+            detail.analysis_result.includes('⚠️') ||
+            detail.analysis_result.includes('❗')
+          )
+        )
+
+        // 添加竞品分析提醒
+        const competitiveAnalysis = changedDetails.filter(detail => 
+          detail.analysis_result && (
+            detail.analysis_result.includes('竞品分析') ||
+            detail.analysis_result.includes('竞争对手') ||
+            detail.analysis_result.includes('竞品优势') ||
+            detail.analysis_result.includes('竞品特点')
+          )
+        )
+
+        content += `
+          <div class="important-notice">
+            <div><strong>📢 监控提醒：</strong> 发现 ${changedDetails.length} 处内容变化</div>
+            ${importantChanges.length > 0 ? `
+              <div style="margin-top:10px">
+                <strong>⚠️ 重要提醒：</strong> 其中包含 ${importantChanges.length} 处重要变化，请及时查看
+              </div>
+            ` : ''}
+            ${competitiveAnalysis.length > 0 ? `
+              <div style="margin-top:10px">
+                <strong>📊 竞品分析：</strong> 其中包含 ${competitiveAnalysis.length} 处竞品相关变化，建议关注
+              </div>
+            ` : ''}
+          </div>
+        `
+
+        content += `<div class="details"><h3>变化概要:</h3>`
         
         changedDetails.forEach(detail => {
-          // 根据action类型设置标签样式
-          let tagClass = 'tag-change'
-          let tagText = '内容变化'
-          
-          if (detail.action === "新增") {
-            tagClass = 'tag-new'
-            tagText = '新增页面'
-          } else if (detail.action === "删除") {
-            tagClass = 'tag-delete'
-            tagText = '页面删除'
-          } else if (detail.action === "警告") {
-            tagClass = 'tag-warning'
-            tagText = '重要变化'
-          }
-          
-          // 提取实际内容和分析结果
-          let actualContent = detail.new_content
-          if (actualContent && actualContent.includes('---')) {
-            actualContent = detail.new_content.split('\n\n---\n\n')[0]
-          }
-          
-          // 提取分析结果
-          const analysisResult = extractAnalysisResult(detail)
+          // 判断是否为重要变化
+          const isImportant = detail.analysis_result && (
+            detail.analysis_result.includes('重要变化') || 
+            detail.analysis_result.includes('注意') ||
+            detail.analysis_result.includes('⚠️') ||
+            detail.analysis_result.includes('❗')
+          )
+
+          // 判断是否包含竞品分析
+          const hasCompetitiveAnalysis = detail.analysis_result && (
+            detail.analysis_result.includes('竞品分析') ||
+            detail.analysis_result.includes('竞争对手') ||
+            detail.analysis_result.includes('竞品优势') ||
+            detail.analysis_result.includes('竞品特点')
+          )
           
           content += `
             <div class="detail-item">
               <div class="detail-header">
                 <div>
                   <strong>模块:</strong> ${detail.page}
-                  <span class="tag ${tagClass}">${tagText}</span>
+                  <span class="tag tag-change">内容变化</span>
+                  ${isImportant ? '<span class="tag tag-important">重要变化</span>' : ''}
+                  ${hasCompetitiveAnalysis ? '<span class="tag" style="background-color: #e1f5fe; color: #0277bd;">竞品分析</span>' : ''}
                 </div>
                 <div>
                   <a href="${detail.link}" target="_blank" style="color:#3A48FB;">查看页面</a>
                 </div>
               </div>
-              
-              <div class="detail-content">
-                <div>
-                  <p><strong>旧内容:</strong></p>
-                  <div class="content-box">${detail.old_content || '无内容'}</div>
-                </div>
-                <div>
-                  <p><strong>新内容:</strong></p>
-                  <div class="content-box">${actualContent || '无内容'}</div>
-                </div>
-              </div>
           `
           
           // 如果有分析结果，添加到邮件中
-          if (analysisResult) {
+          if (detail.analysis_result) {
+            // 处理 Markdown 格式
+            const formattedAnalysis = detail.analysis_result
+              .replace(/### (.*)/g, '<div style="font-size:15px;font-weight:bold;margin-top:10px;margin-bottom:5px;color:#333;">$1</div>')
+              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+              .replace(/- \*\*(.*?)\*\*:(.*)/g, '<div style="margin-left:15px;margin-bottom:5px;"><strong>$1:</strong>$2</div>')
+              .replace(/- (.*)/g, '<div style="margin-left:15px;margin-bottom:5px;">$1</div>')
+              .replace(/\n\n/g, '<br>')
+              .replace(/\n/g, '<br>');
+
             content += `
               <div class="analysis">
-                <h4 style="margin-top:0;margin-bottom:10px;">通义千问分析:</h4>
-                ${analysisResult}
+                ${formattedAnalysis}
               </div>
             `
           }
@@ -210,7 +243,7 @@ export async function sendMonitoringResultEmail(
     // 添加查看链接和页脚
     content += `
           <div style="text-align:center;margin-top:30px;">
-            <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}" class="btn">
+            <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://192.168.0.103:3000'}" class="btn">
               查看完整详情
             </a>
           </div>
@@ -236,6 +269,13 @@ export async function sendMonitoringResultEmail(
       to: recipients.join(', '),
       subject: subject,
       html: content,
+      attachments: [
+        {
+          filename: fileName,
+          content: Buffer.from(await excelBuffer),
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        }
+      ]
     })
 
     console.log(`邮件已成功发送: ${info.messageId}`)

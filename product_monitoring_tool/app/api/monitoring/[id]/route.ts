@@ -18,26 +18,17 @@ export async function GET(
   }
 
   try {
-    // 获取分页参数
-    const searchParams = request.nextUrl.searchParams
-    const page = parseInt(searchParams.get("page") || "1")
-    const limit = parseInt(searchParams.get("limit") || "5")
-    const recordId = searchParams.get("recordId")
-    const offset = (page - 1) * limit
-
     // 获取监控项
     const item = await db.getMonitoringItemById(resolvedParams.id)
     if (!item) {
       return NextResponse.json({ error: "Monitoring item not found" }, { status: 404 })
     }
 
-    // 获取总记录数
-    const totalCount = await db.getMonitoringRecordsCount(resolvedParams.id)
+    // 获取监控记录
+    const records = await db.getMonitoringRecords(resolvedParams.id)
     
-    // 获取分页数据
-    const records = await db.getMonitoringRecords(resolvedParams.id, limit, offset)
-    
-    // 只在请求特定记录详情时获取详情
+    // 如果有指定的记录ID，获取其详情
+    const recordId = request.nextUrl.searchParams.get("recordId")
     let details: MonitoringDetail[] = []
     if (recordId) {
       details = await db.getMonitoringDetails(recordId)
@@ -48,15 +39,18 @@ export async function GET(
       records,
       details,
       pagination: {
-        total: totalCount,
-        page,
-        limit,
-        hasMore: offset + records.length < totalCount
+        total: records.length,
+        page: 1,
+        limit: 5,
+        hasMore: false
       }
     })
   } catch (error) {
-    console.error(`Error in monitoring API:`, error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    console.error('获取监控记录失败:', error)
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    )
   }
 }
 

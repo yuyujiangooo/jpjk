@@ -2,10 +2,10 @@ import { createClient } from '@supabase/supabase-js'
 
 // 从环境变量中获取 Supabase URL 和 API 密钥
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 
 // 创建 Supabase 客户端
-const supabase = createClient(supabaseUrl, supabaseKey, {
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   db: {
     schema: 'public'
   },
@@ -19,7 +19,21 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   }
 })
 
-export { supabase }
+export async function verifyAdminLogin(username: string, password: string) {
+  try {
+    const { data, error } = await supabase
+      .rpc('verify_admin_login', {
+        p_username: username,
+        p_password: password
+      })
+
+    if (error) throw error
+    return { success: true, user: data?.[0] }
+  } catch (error) {
+    console.error('Error verifying admin login:', error)
+    return { success: false, error: '登录失败，请检查用户名和密码' }
+  }
+}
 
 // 检查 Supabase 连接
 export async function checkSupabaseConnection() {

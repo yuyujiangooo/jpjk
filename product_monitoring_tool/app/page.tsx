@@ -7,60 +7,64 @@ import MonitoringResults from "@/components/monitoring-results"
 import AddMonitoringModal from "@/components/add-monitoring-modal"
 import SelectModuleModal from "@/components/select-module-modal"
 import SelectFrequencyModal from "@/components/select-frequency-modal"
+import AuthModal from "@/components/auth-modal"
 import type { MonitoringItem, MonitoringRecord, Module } from "@/lib/monitoring"
 import { addMonitoringItem, deleteMonitoringItem, runMonitoring, exportMonitoringResults } from "@/lib/actions"
+import { monitoringScheduler } from "@/lib/monitoring/scheduler-service"
+import { UserCog } from "lucide-react"
+import { message } from 'antd'
 
 // Define vendor-specific modules
 const vendorModules = {
   华为云: [
     { id: "1", name: "最新动态", selected: true },
     { id: "2", name: "功能总览", selected: true },
-    { id: "3", name: "产品介绍", selected: false },
+    { id: "3", name: "产品介绍", selected: true },
     { id: "4", name: "计费说明", selected: true },
-    { id: "5", name: "快速入门", selected: false },
-    { id: "6", name: "用户指南", selected: false },
-    { id: "7", name: "最佳实践", selected: false },
-    { id: "8", name: "API参考", selected: false },
-    { id: "9", name: "SDK参考", selected: false },
-    { id: "10", name: "场景代码示例", selected: false },
-    { id: "11", name: "常见问题", selected: false },
-    { id: "12", name: "视频帮助", selected: false },
-    { id: "13", name: "文档下载", selected: false },
+    { id: "5", name: "快速入门", selected: true },
+    { id: "6", name: "用户指南", selected: true },
+    { id: "7", name: "最佳实践", selected: true },
+    { id: "8", name: "API参考", selected: true },
+    { id: "9", name: "SDK参考", selected: true },
+    { id: "10", name: "场景代码示例", selected: true },
+    { id: "11", name: "常见问题", selected: true },
+    { id: "12", name: "视频帮助", selected: true },
+    { id: "13", name: "文档下载", selected: true },
   ],
   阿里云: [
     { id: "1", name: "产品概述", selected: true },
     { id: "2", name: "快速入门", selected: true },
-    { id: "3", name: "操作指南", selected: false },
-    { id: "4", name: "实践教程", selected: false },
-    { id: "5", name: "安全合规", selected: false },
-    { id: "6", name: "开发参考", selected: false },
-    { id: "7", name: "服务支持", selected: false },
+    { id: "3", name: "操作指南", selected: true },
+    { id: "4", name: "实践教程", selected: true },
+    { id: "5", name: "安全合规", selected: true },
+    { id: "6", name: "开发参考", selected: true },
+    { id: "7", name: "服务支持", selected: true },
   ],
   腾讯云: [
     { id: "1", name: "动态与公告", selected: true },
     { id: "2", name: "产品简介", selected: true },
-    { id: "3", name: "购买指南", selected: false },
-    { id: "4", name: "快速入门", selected: false },
-    { id: "5", name: "操作指南", selected: false },
-    { id: "6", name: "实践教程", selected: false },
-    { id: "7", name: "API文档", selected: false },
-    { id: "8", name: "常见问题", selected: false },
-    { id: "9", name: "服务协议", selected: false },
-    { id: "10", name: "联系我们", selected: false },
-    { id: "11", name: "词汇表", selected: false },
+    { id: "3", name: "购买指南", selected: true },
+    { id: "4", name: "快速入门", selected: true },
+    { id: "5", name: "操作指南", selected: true },
+    { id: "6", name: "实践教程", selected: true },
+    { id: "7", name: "API文档", selected: true },
+    { id: "8", name: "常见问题", selected: true },
+    { id: "9", name: "服务协议", selected: true },
+    { id: "10", name: "联系我们", selected: true },
+    { id: "11", name: "词汇表", selected: true },
   ],
   天翼云: [
     { id: "1", name: "产品动态", selected: true },
     { id: "2", name: "产品介绍", selected: true },
     { id: "3", name: "计费说明", selected: true },
-    { id: "4", name: "快速入门", selected: false },
-    { id: "5", name: "用户指南", selected: false },
-    { id: "6", name: "IPv6带宽", selected: false },
-    { id: "7", name: "共享流量包", selected: false },
-    { id: "8", name: "最佳实践", selected: false },
-    { id: "9", name: "API参考", selected: false },
-    { id: "10", name: "常见问题", selected: false },
-    { id: "11", name: "相关协议", selected: false },
+    { id: "4", name: "快速入门", selected: true },
+    { id: "5", name: "用户指南", selected: true },
+    { id: "6", name: "IPv6带宽", selected: true },
+    { id: "7", name: "共享流量包", selected: true },
+    { id: "8", name: "最佳实践", selected: true },
+    { id: "9", name: "API参考", selected: true },
+    { id: "10", name: "常见问题", selected: true },
+    { id: "11", name: "相关协议", selected: true },
   ],
 }
 
@@ -74,7 +78,9 @@ export default function Home() {
   const [productUrl, setProductUrl] = useState("https://support.huaweicloud.com/eip/index.html")
   const [monitoringItemName, setMonitoringItemName] = useState("华为云弹性公网IP_1")
   const [selectedVendor, setSelectedVendor] = useState("华为云")
-  const [selectedModules, setSelectedModules] = useState<string[]>(["最新动态", "功能总览", "计费说明"])
+  const [selectedModules, setSelectedModules] = useState<string[]>(
+    vendorModules["华为云"].filter(m => m.selected).map(m => m.name)
+  )
   const [frequency, setFrequency] = useState("30天/次")
   const [nameError, setNameError] = useState("")
   const [emailEnabled, setEmailEnabled] = useState(false)
@@ -96,44 +102,106 @@ export default function Home() {
   const [isLoadingRecords, setIsLoadingRecords] = useState(false)
   const RECORDS_PER_PAGE = 5
 
-  // 加载监控项列表
+  // 修改用户状态，简化为只有管理员
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [showLoginModal, setShowLoginModal] = useState(false)
+
+  // 添加 SSE 相关状态
+  const [eventSource, setEventSource] = useState<EventSource | null>(null)
+
+  // 添加分页相关状态
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(10);
+  const [totalPages, setTotalPages] = useState(1);
+
+  // 初始化 SSE 连接
   useEffect(() => {
-    const fetchMonitoringItems = async () => {
-      setIsLoading(true)
-      let retryCount = 0
-      const maxRetries = 3
+    const sse = new EventSource('/api/monitoring/events')
 
-      const tryFetch = async () => {
-        try {
-          const response = await fetch('/api/monitoring')
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`)
+    sse.onmessage = (event) => {
+      const data = JSON.parse(event.data)
+      
+      // 处理不同类型的更新
+      switch (data.type) {
+        case 'itemAdded':
+          setMonitoringItems(prev => [...prev, data.item])
+          break
+        case 'itemDeleted':
+          setMonitoringItems(prev => prev.filter(item => item.id !== data.itemId))
+          if (selectedItem?.id === data.itemId) {
+            setSelectedItem(null)
           }
-          const data = await response.json()
-          if (data.items) {
-            setMonitoringItems(data.items)
-          } else {
-            throw new Error('No items data in response')
+          break
+        case 'itemUpdated':
+          setMonitoringItems(prev => 
+            prev.map(item => item.id === data.item.id ? data.item : item)
+          )
+          if (selectedItem?.id === data.item.id) {
+            setSelectedItem(data.item)
           }
-        } catch (error) {
-          console.error('Error fetching monitoring items:', error)
-          if (retryCount < maxRetries) {
-            retryCount++
-            console.log(`Retrying... (${retryCount}/${maxRetries})`)
-            await new Promise(resolve => setTimeout(resolve, 1000 * retryCount))
-            return tryFetch()
+          break
+        case 'monitoringResult':
+          if (data.itemId === selectedItem?.id) {
+            // 更新监控记录和详情
+            if (data.record) {
+              setRecordsCache(prev => ({
+                ...prev,
+                [data.itemId]: [data.record, ...(prev[data.itemId] || [])]
+              }))
+              setMonitoringRecords(prev => [data.record, ...prev])
+            }
+            if (data.details) {
+              setDetailsCache(prev => ({
+                ...prev,
+                [data.itemId]: [...data.details, ...(prev[data.itemId] || [])]
+              }))
+              setMonitoringDetails(prev => [...data.details, ...prev])
+            }
           }
-          // 显示错误提示
-          alert('加载监控项失败，请刷新页面重试')
-        }
+          break
       }
-
-      await tryFetch()
-      setIsLoading(false)
     }
 
-    fetchMonitoringItems()
-  }, [])
+    sse.onerror = (error) => {
+      console.error('SSE 连接错误:', error)
+      // 5秒后尝试重连
+      setTimeout(() => {
+        sse.close()
+        setEventSource(new EventSource('/api/monitoring/events'))
+      }, 5000)
+    }
+
+    setEventSource(sse)
+
+    // 清理函数
+    return () => {
+      sse.close()
+    }
+  }, [selectedItem?.id])
+
+  // 加载监控项列表
+  const fetchMonitoringItems = async (page = 1) => {
+    try {
+      setIsLoading(true);
+      const response = await fetch(`/api/monitoring-items?page=${page}&pageSize=${pageSize}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch monitoring items');
+      }
+      const data = await response.json();
+      setMonitoringItems(data.items);
+      setTotalPages(data.pagination.totalPages);
+      setCurrentPage(page);
+    } catch (error) {
+      console.error('Error:', error);
+      message.error('获取监控项失败');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMonitoringItems();
+  }, []);
 
   // Update modules when vendor changes
   useEffect(() => {
@@ -209,9 +277,51 @@ export default function Home() {
 
   const handleSelectItem = (item: MonitoringItem) => {
     setSelectedItem(item)
+    monitoringScheduler.addOrUpdateItem(item, true)
+    setMonitoringRecords(recordsCache[item.id] || [])
+    setMonitoringDetails(detailsCache[item.id] || [])
   }
 
+  // 修改权限检查函数
+  const hasPermission = () => {
+    return isAdmin
+  }
+
+  // 修改登录处理函数
+  const handleLogin = async (username: string, password: string) => {
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username, password }),
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        setIsAdmin(true)
+        setShowLoginModal(false)
+      } else {
+        alert(data.error || '登录失败，请检查用户名和密码')
+      }
+    } catch (error) {
+      console.error('Login error:', error)
+      alert('登录失败，请稍后重试')
+    }
+  }
+
+  const handleLogout = () => {
+    setIsAdmin(false)
+  }
+
+  // 修改现有的操作函数，添加权限检查
   const handleAddClick = () => {
+    if (!hasPermission()) {
+      alert('只有管理员可以添加监控项')
+      return
+    }
     setShowAddModal(true)
     // Reset error message when opening modal
     setNameError("")
@@ -249,7 +359,7 @@ export default function Home() {
     // Update URL based on vendor (simplified example)
     const vendorUrls = {
       华为云: "https://support.huaweicloud.com/eip/index.html",
-      阿里云: "https://help.aliyun.com/product/eip.html",
+      阿里云: "https://help.aliyun.com/zh/eip/?spm=a2c4g.11186623.0.0.57606dc2o5T6lX",
       腾讯云: "https://cloud.tencent.com/document/product/eip",
       天翼云: "https://www.ctyun.cn/document/eip",
     }
@@ -331,6 +441,10 @@ export default function Home() {
   }
 
   const handleDeleteItem = async (id: string) => {
+    if (!hasPermission()) {
+      alert('只有管理员可以删除监控项')
+      return
+    }
     const result = await deleteMonitoringItem(id)
 
     if (result.success) {
@@ -371,11 +485,15 @@ export default function Home() {
     }
   }
 
-  const handleStartMonitoring = async () => {
-    if (!selectedItem) return
+  const handleStartMonitoring = async (item: MonitoringItem) => {
+    if (!hasPermission()) {
+      alert('只有管理员可以执行监控')
+      return
+    }
+    if (!item) return
 
     try {
-      const response = await fetch(`/api/monitoring/${selectedItem.id}/start`, {
+      const response = await fetch(`/api/monitoring/${item.id}/start`, {
         method: "POST",
       })
 
@@ -388,16 +506,16 @@ export default function Home() {
       if (result.success) {
         // 更新监控项状态
         const updatedItems = monitoringItems.map((item) =>
-          item.id === selectedItem.id ? { ...item, is_monitoring: true } : item,
+          item.id === result.item.id ? { ...item, is_monitoring: true } : item,
         )
         setMonitoringItems(updatedItems)
 
         // 更新选中项状态
-        const updatedSelectedItem = { ...selectedItem, is_monitoring: true }
+        const updatedSelectedItem = { ...item, is_monitoring: true }
         setSelectedItem(updatedSelectedItem)
 
         // 运行初始监控
-        const monitoringResult = await runMonitoring(selectedItem.id)
+        const monitoringResult = await runMonitoring(item.id)
 
         if (monitoringResult.success && monitoringResult.result) {
           const { item: updatedItem, record: newRecord, details: newDetails } = monitoringResult.result
@@ -411,20 +529,20 @@ export default function Home() {
 
           // 更新缓存和当前显示的记录
           if (newRecord) {
-            const updatedRecords = [newRecord, ...(recordsCache[selectedItem.id] || [])]
+            const updatedRecords = [newRecord, ...(recordsCache[item.id] || [])]
             setRecordsCache(prev => ({
               ...prev,
-              [selectedItem.id]: updatedRecords
+              [item.id]: updatedRecords
             }))
             setMonitoringRecords(updatedRecords)
           }
 
           // 更新缓存和当前显示的详情
           if (newDetails && newDetails.length > 0) {
-            const updatedDetails = [...newDetails, ...(detailsCache[selectedItem.id] || [])]
+            const updatedDetails = [...newDetails, ...(detailsCache[item.id] || [])]
             setDetailsCache(prev => ({
               ...prev,
-              [selectedItem.id]: updatedDetails
+              [item.id]: updatedDetails
             }))
             setMonitoringDetails(updatedDetails)
           }
@@ -436,11 +554,18 @@ export default function Home() {
     }
   }
 
-  const handleStopMonitoring = async () => {
-    if (!selectedItem) return
+  const handleStopMonitoring = async (id: string) => {
+    if (!hasPermission()) {
+      alert('只有管理员可以停止监控')
+      return
+    }
+    if (!selectedItem || selectedItem.id !== id) return
 
     try {
-      const response = await fetch(`/api/monitoring/${selectedItem.id}/stop`, {
+      // 先取消正在执行的监控任务
+      monitoringScheduler.cancelExecution(id);
+
+      const response = await fetch(`/api/monitoring/${id}/stop`, {
         method: "POST",
       })
 
@@ -453,11 +578,15 @@ export default function Home() {
       if (result.success) {
         // Update the item in the list
         const updatedItems = monitoringItems.map((item) =>
-          item.id === selectedItem.id ? { ...item, is_monitoring: false } : item,
+          item.id === id ? { ...item, is_monitoring: false } : item,
         )
 
+        const updatedSelectedItem = { ...selectedItem, is_monitoring: false }
         setMonitoringItems(updatedItems)
-        setSelectedItem({ ...selectedItem, is_monitoring: false })
+        setSelectedItem(updatedSelectedItem)
+        
+        // 更新调度器中的监控项状态
+        monitoringScheduler.addOrUpdateItem(updatedSelectedItem)
       }
     } catch (error) {
       console.error("Error stopping monitoring:", error)
@@ -465,20 +594,79 @@ export default function Home() {
     }
   }
 
+  // 分页组件
+  const Pagination = () => {
+    return (
+        <div className="flex justify-center mt-4 space-x-2">
+            <button
+                onClick={() => fetchMonitoringItems(currentPage - 1)}
+                disabled={currentPage === 1 || isLoading}
+                className={`px-4 py-2 rounded ${
+                    currentPage === 1 || isLoading
+                        ? 'bg-gray-300 cursor-not-allowed'
+                        : 'bg-blue-500 hover:bg-blue-600 text-white'
+                }`}
+            >
+                上一页
+            </button>
+            <span className="px-4 py-2">
+                第 {currentPage} 页，共 {totalPages} 页
+            </span>
+            <button
+                onClick={() => fetchMonitoringItems(currentPage + 1)}
+                disabled={currentPage === totalPages || isLoading}
+                className={`px-4 py-2 rounded ${
+                    currentPage === totalPages || isLoading
+                        ? 'bg-gray-300 cursor-not-allowed'
+                        : 'bg-blue-500 hover:bg-blue-600 text-white'
+                }`}
+            >
+                下一页
+            </button>
+        </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-background">
       {/* Fixed header with white floating effect */}
       <header className="fixed top-0 left-0 right-0 bg-white shadow-md z-50">
         <div className="max-w-[1440px] mx-auto px-4 py-3">
-          <div className="flex items-center">
-            <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/%E7%A4%BA%E4%BE%8B1-Xj5wZNHLMZv389y66etN9SEixUVRDW.png"
-              alt="竞品监控工具 Logo"
-              width={28}
-              height={28}
-              className="mr-3"
-            />
-            <h1 className="text-xl font-bold artistic-title">竞品监控工具</h1>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <Image
+                src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/%E7%A4%BA%E4%BE%8B1-Xj5wZNHLMZv389y66etN9SEixUVRDW.png"
+                alt="竞品监控工具 Logo"
+                width={28}
+                height={28}
+                className="mr-3"
+              />
+              <h1 className="text-xl font-bold artistic-title">竞品监控工具</h1>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              {isAdmin ? (
+                <>
+                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#5767FC] to-[#EC78FF] font-medium">
+                    管理员
+                  </span>
+                  <button
+                    onClick={handleLogout}
+                    className="text-sm px-4 py-2 rounded-lg bg-gradient-to-r from-[#5767FC] to-[#EC78FF] text-white hover:opacity-90 transition-opacity"
+                  >
+                    退出登录
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setShowLoginModal(true)}
+                  className="text-sm px-4 py-2 rounded-lg bg-gradient-to-r from-[#5767FC] to-[#EC78FF] text-white hover:opacity-90 transition-opacity flex items-center space-x-2"
+                >
+                  <UserCog size={18} />
+                  <span>管理员登录</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -498,8 +686,11 @@ export default function Home() {
             selectedItem={selectedItem}
             records={monitoringRecords}
             details={monitoringDetails}
-            onStartMonitoring={handleStartMonitoring}
-            onStopMonitoring={handleStopMonitoring}
+            onStartMonitoring={() => selectedItem && handleStartMonitoring(selectedItem)}
+            onStopMonitoring={() => selectedItem && handleStopMonitoring(selectedItem.id)}
+            isLoadingRecords={isLoadingRecords}
+            onLoadMore={handleLoadMoreRecords}
+            hasMoreRecords={recordsPage * RECORDS_PER_PAGE < (monitoringRecords?.length || 0)}
           />
         </div>
       </main>
@@ -536,6 +727,14 @@ export default function Home() {
           onClose={handleCloseFrequencyModal}
           selectedFrequency={frequency}
           onSelectFrequency={handleSelectFrequency}
+        />
+      )}
+
+      {showLoginModal && (
+        <AuthModal
+          isOpen={showLoginModal}
+          onClose={() => setShowLoginModal(false)}
+          onSubmit={handleLogin}
         />
       )}
 

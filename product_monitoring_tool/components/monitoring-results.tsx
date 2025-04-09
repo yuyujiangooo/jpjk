@@ -5,6 +5,9 @@ import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { getMonitoringRecordDetails } from "@/lib/actions"
 import { monitoringScheduler } from "@/lib/monitoring/scheduler-service"
+import { utils, writeFile } from 'xlsx'
+import { marked } from 'marked'
+import DiffMatchPatch from 'diff-match-patch'
 
 // 为window添加全局函数类型
 declare global {
@@ -16,7 +19,7 @@ declare global {
 interface MonitoringResultsProps {
   selectedItem: MonitoringItem | null
   records: MonitoringRecord[]
-  details: any[]
+  details: MonitoringDetail[]
   onStartMonitoring?: () => void
   onStopMonitoring?: () => void
   isLoadingRecords?: boolean
@@ -39,106 +42,280 @@ export default function MonitoringResults({
   const [isLoadingRecordDetails, setIsLoadingRecordDetails] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [detailsCache, setDetailsCache] = useState<Record<string, MonitoringDetail[]>>({})
+  const [executingItems, setExecutingItems] = useState<Set<string>>(new Set())  // 使用Set存储正在执行的监控项ID
 
-  // 添加内容查看对话框函数
+  // 修改开始监控的处理函数
+  const handleStartMonitoring = async () => {
+    if (!selectedItem?.id) return;
+    
+    // 检查该监控项是否正在执行
+    if (executingItems.has(selectedItem.id)) {
+      console.log('该监控项正在执行中');
+      return;
+    }
+
+    // 添加到执行集合
+    setExecutingItems(prev => new Set(prev).add(selectedItem.id));
+
+    try {
+      await onStartMonitoring?.();
+    } catch (error) {
+      console.error('监控执行失败:', error);
+    } finally {
+      // 从执行集合中移除
+      setExecutingItems(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(selectedItem.id);
+        return newSet;
+      });
+    }
+  };
+
+  // 修改停止监控的处理函数
+  const handleStopMonitoring = async () => {
+    if (!selectedItem?.id) return;
+    
+    try {
+      await onStopMonitoring?.();
+      // 从执行集合中移除
+      setExecutingItems(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(selectedItem.id);
+        return newSet;
+      });
+    } catch (error) {
+      console.error('停止监控失败:', error);
+    }
+  };
+
+  // 添加计算文本差异的函数
+  const computeTextDiff = (oldText: string, newText: string) => {
+    // 如果是首次监测，将旧内容视为空字符串
+    if (oldText === "首次监测") {
+      oldText = "";
+    }
+    
+    const dmp = new DiffMatchPatch();
+    const diffs = dmp.diff_main(oldText, newText);
+    dmp.diff_cleanupSemantic(diffs);
+    
+    let markdownText = '';
+    for (const [type, text] of diffs) {
+      switch (type) {
+        case -1: // 删除的文本
+          markdownText += `<span class="bg-red-100 line-through">${text}</span>`;
+          break;
+        case 1: // 添加的文本
+          markdownText += `<span class="bg-green-100">${text}</span>`;
+          break;
+        case 0: // 未变化的文本
+          markdownText += text;
+          break;
+      }
+    }
+    
+    // 使用 marked 渲染 markdown
+    marked.setOptions({
+      breaks: true,
+      gfm: true,
+      async: false // 确保使用同步版本
+    });
+    
+    try {
+      // 渲染 markdown
+      const html = marked.parse(markdownText) as string;
+      
+      // 替换所有链接，添加 target="_blank"
+      return html.replace(
+        /<a\s+(?:[^>]*?\s+)?href="([^"]*)"([^>]*)>/g, 
+        '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline"$2>'
+      );
+    } catch (error) {
+      console.error('Error parsing markdown:', error);
+      return markdownText; // 如果解析失败，返回原始文本
+    }
+  };
+
+  // 修改 showContentDialog 函数
   const showContentDialog = (detail: MonitoringDetail) => {
     const dialog = document.createElement('dialog')
-    dialog.className = 'fixed inset-0 z-50 p-4 bg-white rounded-lg shadow-xl max-w-4xl mx-auto my-16 overflow-auto'
+    
+    // 检测是否为移动设备
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    dialog.className = 'fixed inset-0 z-50 p-4 bg-white rounded-lg shadow-xl max-w-4xl mx-auto my-16'
+    
+    // 计算差异并渲染 markdown
+    const diffHtml = detail.action === "内容变化" ? 
+      computeTextDiff(detail.old_content, detail.new_content) : 
+      marked.parse(detail.new_content);
+
+    // 解析分析结果
+    let analysisContent = '';
+    if (detail.analysis_result) {
+      const sections = detail.analysis_result
+        .replace(/\*\*/g, '')
+        .split('###')
+        .filter(Boolean)
+        .map(section => section.trim())
+        .filter(section => !section.startsWith('竞品分析结果：'));
+        
+      analysisContent = sections.map(section => {
+        const lines = section.trim().split('\n').filter(Boolean);
+        const title = lines[0].trim();
+        const content = lines.slice(1).map(line => {
+          if (line.startsWith('- ')) {
+            const parts = line.split('：');
+            if (parts.length >= 2) {
+              const label = parts[0].replace('- ', '').trim();
+              const value = parts[1].trim();
+              return `<div class="mb-2">
+                <span class="font-medium text-gray-700">${label}：</span>
+                <span class="text-gray-600">${value}</span>
+              </div>`;
+            }
+          }
+          return `<p class="mb-1 text-gray-600">${line}</p>`;
+        }).join('');
+
+        return `
+          <div class="mb-6 last:mb-0">
+            <h5 class="text-base font-medium text-gray-800 mb-3">${title}</h5>
+            <div class="pl-4">${content}</div>
+          </div>
+        `;
+      }).join('');
+    }
     
     dialog.innerHTML = `
-      <div class="p-6">
-        <div class="flex justify-between items-center mb-4">
-          <h3 class="text-xl font-medium">内容详情</h3>
+      <div class="h-full flex flex-col">
+        <div class="flex justify-between items-center mb-3">
+          <div class="flex items-center gap-2">
+            <h3 class="text-lg font-medium">内容详情</h3>
+            ${detail.action === "内容变化" ? '<span class="bg-yellow-100 text-yellow-800 text-xs px-2 py-1 rounded-full">内容变化</span>' : ''}
+            ${detail.analysis_result && isImportantChange(detail) ? '<span class="bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full">重要变化</span>' : ''}
+          </div>
           <button 
-            className="text-gray-500 hover:text-gray-700" 
+            class="text-gray-500 hover:text-gray-700 p-2" 
             onClick="this.closest('dialog').close()"
             title="关闭"
             aria-label="关闭对话框"
+            style="touch-action: manipulation;"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
-        <div class="mb-6">
-          <h4 class="font-medium mb-2">页面: ${detail.page}</h4>
-          <a href="${detail.link}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">${detail.link}</a>
+        <div class="mb-3">
+          <h4 class="font-medium mb-1">页面: ${detail.page}</h4>
+          <a href="${detail.link}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline text-sm break-all">${detail.link}</a>
         </div>
-        <div class="grid grid-cols-2 gap-6 mb-6">
-          <div>
-            <h5 class="font-medium mb-2">旧内容:</h5>
-            <div class="bg-gray-50 p-4 rounded max-h-60 overflow-auto text-sm">${detail.old_content.replace(/\n/g, '<br>')}</div>
+        <div class="grid ${detail.analysis_result ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'} gap-4">
+          <div class="bg-white border rounded-lg shadow-sm">
+            <div class="border-b px-4 py-2.5 bg-gray-50">
+              <h4 class="font-medium text-gray-700 text-base">${detail.action === "内容变化" ? '内容对比（红色表示删除，绿色表示新增）' : '内容'}</h4>
+            </div>
+            <div class="p-3 overflow-y-auto h-[300px] md:h-[400px] prose prose-sm max-w-none custom-scrollbar">
+              <div class="min-w-full overflow-x-auto">
+                ${diffHtml}
+              </div>
+            </div>
           </div>
-          <div>
-            <h5 class="font-medium mb-2">新内容:</h5>
-            <div class="bg-gray-50 p-4 rounded max-h-60 overflow-auto text-sm">${detail.new_content.replace(/\n/g, '<br>')}</div>
-          </div>
+          ${detail.analysis_result ? `
+            <div class="bg-white border rounded-lg shadow-sm">
+              <div class="border-b px-4 py-2.5 bg-gray-50">
+                <h4 class="font-medium text-gray-700 text-base">竞品分析</h4>
+              </div>
+              <div class="p-3 overflow-y-auto h-[300px] md:h-[400px] prose prose-sm max-w-none custom-scrollbar">
+                <div class="min-w-full overflow-x-auto">
+                  ${analysisContent}
+                </div>
+              </div>
+            </div>
+          ` : ''}
         </div>
       </div>
     `
     
-    document.body.appendChild(dialog)
-    dialog.showModal()
+    // 设置弹窗的样式
+    if (isMobile) {
+      // 移动端样式
+      dialog.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        max-height: 100%;
+        margin: 0;
+        padding: 16px;
+        overflow: auto;
+        -webkit-overflow-scrolling: touch;
+      `
+    } else {
+      // PC端样式保持不变
+      dialog.style.cssText = `
+        max-width: ${detail.analysis_result ? '1000px' : '600px'};
+        width: 100%;
+        margin: 40px auto;
+        padding: 20px;
+        overflow: hidden;
+      `
+    }
     
+    document.body.appendChild(dialog)
+    
+    // 确保在移动端也能正常显示
+    if (typeof dialog.showModal === 'function') {
+      dialog.showModal()
+    } else {
+      // 如果 showModal 不可用，使用备用方案
+      dialog.setAttribute('open', '')
+      dialog.style.display = 'block'
+    }
+    
+    // 点击空白处关闭
     dialog.addEventListener('click', (e) => {
-      if (e.target === dialog) dialog.close()
+      if (e.target === dialog) {
+        if (typeof dialog.close === 'function') {
+          dialog.close()
+        } else {
+          // 如果 close 不可用，手动移除
+          dialog.remove()
+        }
+      }
     })
+    
+    // 添加触摸滚动支持
+    dialog.addEventListener('touchmove', (e) => {
+      e.stopPropagation()
+    }, { passive: true })
   }
 
-  // 添加分析结果对话框函数
-  const showAnalysisDialog = (detail: MonitoringDetail) => {
-    const dialog = document.createElement('dialog')
-    dialog.className = 'fixed inset-0 z-50 p-4 bg-white rounded-lg shadow-xl max-w-4xl mx-auto my-16 overflow-auto'
-    
-    dialog.innerHTML = `
-      <div class="p-6">
-        <div class="flex justify-between items-center mb-4">
-          <h3 class="text-xl font-medium">竞品分析结果</h3>
-          <button 
-            className="text-gray-500 hover:text-gray-700" 
-            onClick="this.closest('dialog').close()"
-            title="关闭"
-            aria-label="关闭对话框"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div class="mb-6">
-          <h4 class="font-medium mb-2">页面: ${detail.page}</h4>
-          <a href="${detail.link}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">${detail.link}</a>
-        </div>
-        <div class="prose max-w-none">
-          ${detail.analysis_result ? detail.analysis_result.replace(/\n/g, '<br>') : '暂无分析结果'}
-        </div>
-      </div>
-    `
-    
-    document.body.appendChild(dialog)
-    dialog.showModal()
-    
-    dialog.addEventListener('click', (e) => {
-      if (e.target === dialog) dialog.close()
-    })
-  }
+  // 添加判断是否为重要信息的函数
+  const isImportantChange = (detail: MonitoringDetail) => {
+    if (!detail.analysis_result) return false;
+    // 检查分析结果中是否包含表示重要性的关键词
+    return detail.analysis_result.includes('重要变化') || 
+           detail.analysis_result.includes('注意') ||
+           detail.analysis_result.includes('⚠️') ||
+           detail.analysis_result.includes('❗');
+  };
 
   // 在组件挂载时启动调度器
   useEffect(() => {
-    monitoringScheduler.start()
+    // 已禁用自动执行功能
     return () => {
-      monitoringScheduler.stop()
+      // 清理工作...
     }
   }, [])
 
   // 监听selectedItem变化，更新调度器中的监控项
   useEffect(() => {
     if (selectedItem) {
-      if (selectedItem.is_monitoring) {
-        monitoringScheduler.addOrUpdateItem(selectedItem)
-      } else {
-        monitoringScheduler.removeItem(selectedItem.id)
-      }
+      // 已禁用自动执行功能
     }
   }, [selectedItem?.id, selectedItem?.is_monitoring])
 
@@ -160,6 +337,126 @@ export default function MonitoringResults({
     setIsLoadingRecordDetails(false)
     setLoadError(null)
   }, [selectedItem?.id])
+
+  useEffect(() => {
+    if (selectedItem) {
+      // 假设有一个函数 fetchMonitoringRecords 用于获取监控记录
+      fetchMonitoringRecords(selectedItem.id);
+    }
+  }, [selectedItem]);
+
+  // 假设 fetchMonitoringRecords 是一个获取监控记录的函数
+  const fetchMonitoringRecords = async (itemId: string) => {
+    // 在这里实现获取监控记录的逻辑
+    // 例如，通过 API 调用获取数据并更新状态
+  };
+
+  // 添加导出函数
+  const exportMonitoringResults = async (selectedItem: MonitoringItem, selectedRecord: MonitoringRecord | null, selectedRecordDetails: MonitoringDetail[]) => {
+    if (!selectedItem || !selectedRecord || selectedRecordDetails.length === 0) {
+      return;
+    }
+
+    // 添加内容截断函数
+    const truncateContent = (content: string, maxLength: number = 32000) => {
+      if (!content) return '';
+      if (content.length <= maxLength) return content;
+      return content.substring(0, maxLength) + '...(内容已截断)';
+    };
+
+    // 创建工作簿
+    const wb = utils.book_new();
+
+    // 创建监控记录工作表
+    const recordData = [
+      ['监控项目', '监控时间', '状态', '摘要'],
+      [
+        selectedItem.name,
+        new Date(selectedRecord.date).toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        }),
+        selectedRecord.status,
+        truncateContent(selectedRecord.summary, 32000)
+      ]
+    ];
+    const recordWs = utils.aoa_to_sheet(recordData);
+    utils.book_append_sheet(wb, recordWs, '监控记录');
+
+    // 创建监控详情工作表，只包含变化内容
+    const detailsData = [
+      ['序号', '页面', '链接', '变化状态', '内容变化', '竞品分析']
+    ];
+
+    selectedRecordDetails.forEach((detail, index) => {
+      // 计算内容差异
+      let diffContent = '';
+      if (detail.action === "内容变化") {
+        const dmp = new DiffMatchPatch();
+        const oldText = detail.old_content === "首次监测" ? "" : detail.old_content;
+        const diffs = dmp.diff_main(oldText, detail.new_content);
+        dmp.diff_cleanupSemantic(diffs);
+        
+        // 将差异转换为可读的文本格式
+        diffContent = diffs.map(([type, text]) => {
+          switch (type) {
+            case -1: // 删除的文本
+              return `【删除】${text}`;
+            case 1: // 添加的文本
+              return `【新增】${text}`;
+            default: // 未变化的文本
+              return text;
+          }
+        }).join('');
+      }
+
+      detailsData.push([
+        (index + 1).toString(),
+        truncateContent(detail.page, 32000),
+        truncateContent(detail.link, 32000),
+        detail.action,
+        detail.action === "内容变化" ? truncateContent(diffContent, 32000) : "无变化",
+        truncateContent(detail.analysis_result || '-', 32000)
+      ]);
+    });
+
+    const detailsWs = utils.aoa_to_sheet(detailsData);
+    utils.book_append_sheet(wb, detailsWs, '监控详情');
+
+    // 设置列宽
+    const wscols = [
+      { wch: 8 },    // 序号
+      { wch: 30 },   // 页面
+      { wch: 50 },   // 链接
+      { wch: 15 },   // 变化状态
+      { wch: 80 },   // 内容变化
+      { wch: 50 }    // 竞品分析
+    ];
+    detailsWs['!cols'] = wscols;
+
+    try {
+      // 生成文件名
+      const fileName = `${selectedItem.name}_监控结果_${new Date().toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).replace(/[/:]/g, '')}.xlsx`;
+
+      // 导出文件
+      writeFile(wb, fileName);
+    } catch (error) {
+      console.error('导出文件失败:', error);
+      alert('导出文件失败，可能是因为内容过长，请尝试减少导出内容或分批导出。');
+    }
+  };
 
   if (!selectedItem) {
     return (
@@ -222,23 +519,13 @@ export default function MonitoringResults({
         <div className="p-4 overflow-y-auto custom-scrollbar flex-1">
           <div className="flex items-center gap-3 mb-4">
             <h3 className="text-lg font-medium text-blue-dark">{selectedItem.name}</h3>
-            {selectedItem.is_monitoring ? (
-              <button
-                onClick={onStopMonitoring}
-                className="flex items-center bg-[#3A48FB] hover:bg-[#2A38EB] text-white px-4 py-2 rounded-lg transition-colors text-sm"
-              >
-                <span className="mr-2">⏸</span>
-                停止监控
-              </button>
-            ) : (
-              <button
-                onClick={onStartMonitoring}
-                className="flex items-center bg-[#ECEEFF] text-[#3A48FB] border border-[#3A48FB] hover:bg-[#E0E2FF] px-4 py-2 rounded-lg transition-colors text-sm"
-              >
-                <span className="mr-2">▶</span>
-                开始监控
-              </button>
-            )}
+            <Button
+              onClick={executingItems.has(selectedItem?.id || '') ? handleStopMonitoring : handleStartMonitoring}
+              className={`flex items-center justify-center bg-[#ECEEFF] text-[#3A48FB] border border-[#3A48FB] rounded-lg px-4 py-2 hover:bg-[#3A48FB] hover:text-white transition-colors`}
+            >
+              <span className="mr-2">{executingItems.has(selectedItem?.id || '') ? '⏸' : '▶'}</span>
+              {executingItems.has(selectedItem?.id || '') ? "停止监控" : "开始监控"}
+            </Button>
           </div>
 
           <div className="grid grid-cols-2 gap-4 mb-6">
@@ -318,7 +605,10 @@ export default function MonitoringResults({
                       </tr>
                     ) : hasRecords ? (
                       <>
-                        {records.map((record, index) => (
+                        {records
+                          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                          .slice(0, 5)  // 只显示前5条记录
+                          .map((record, index) => (
                           <tr 
                             key={record.id} 
                             className={`hover:bg-gray-50 cursor-pointer ${selectedRecord?.id === record.id ? 'bg-blue-50' : ''}`}
@@ -399,25 +689,24 @@ export default function MonitoringResults({
           </div>
 
             <div className="bg-white rounded-lg shadow-sm">
-              <div className="overflow-x-auto">
-                <div className="inline-block min-w-full align-middle">
+              <div className="overflow-hidden">
+                <div className="min-w-full align-middle">
                   <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
-                    <table className="min-w-full divide-y divide-gray-200">
+                    <table className="w-full divide-y divide-gray-200 table-fixed">
                       <thead className="bg-gray-50">
                         <tr>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10 whitespace-nowrap">序号</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10 whitespace-nowrap">页面</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10 whitespace-nowrap">链接</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10 whitespace-nowrap">变化状态</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10 whitespace-nowrap">内容</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10 whitespace-nowrap">竞品分析</th>
+                      <th className="w-[60px] px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10">序号</th>
+                      <th className="w-[180px] px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10">页面</th>
+                      <th className="w-[180px] px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10">链接</th>
+                      <th className="w-[100px] px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10">变化状态</th>
+                      <th className="w-[100px] px-4 py-2 text-left text-sm font-medium text-gray-500 sticky top-0 bg-gray-50 z-10">内容分析</th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
                     {selectedRecord ? (
                       isLoadingRecordDetails ? (
                         <tr>
-                          <td colSpan={6} className="px-4 py-4 text-sm text-center text-gray-500">
+                          <td colSpan={5} className="px-4 py-4 text-sm text-center text-gray-500">
                             <div className="flex justify-center items-center">
                               <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mr-2"></div>
                               加载中...
@@ -426,20 +715,28 @@ export default function MonitoringResults({
                         </tr>
                       ) : loadError ? (
                         <tr>
-                          <td colSpan={6} className="px-4 py-4 text-sm text-center text-red-500">
+                          <td colSpan={5} className="px-4 py-4 text-sm text-center text-red-500">
                             {loadError}
                           </td>
                         </tr>
                       ) : selectedRecordDetails.length > 0 ? (
                         selectedRecordDetails.map((detail) => (
                             <tr key={detail.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-2 text-sm text-gray-900 whitespace-nowrap">{detail.rank}</td>
-                            <td className="px-4 py-2 text-sm text-gray-900 whitespace-nowrap">{detail.page}</td>
-                              <td className="px-4 py-2 text-sm text-blue-600 whitespace-nowrap">
-                                <a href={detail.link} target="_blank" rel="noopener noreferrer" className="hover:underline">
-                                  {detail.link.length > 30 ? detail.link.substring(0, 30) + '...' : detail.link}
+                            <td className="px-4 py-2 text-sm text-gray-900">{detail.rank}</td>
+                            <td className="px-4 py-2 text-sm text-gray-900">
+                              <div className="tooltip">
+                                <div className="truncate">{detail.page}</div>
+                                <div className="tooltiptext-top">{detail.page}</div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-2 text-sm text-blue-600">
+                              <div className="tooltip">
+                                <a href={detail.link} target="_blank" rel="noopener noreferrer" className="hover:underline truncate block">
+                                  {detail.link}
                                 </a>
-                              </td>
+                                <div className="tooltiptext-top">{detail.link}</div>
+                              </div>
+                            </td>
                               <td className="px-4 py-2 text-sm whitespace-nowrap">
                                 {detail.action === "内容变化" ? (
                                   <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs">内容变化</span>
@@ -448,41 +745,34 @@ export default function MonitoringResults({
                                 )}
                               </td>
                             <td className="px-4 py-2 text-sm text-gray-900">
-                              <button 
-                                className="text-blue-600 hover:text-blue-800 text-xs whitespace-nowrap"
-                                onClick={() => showContentDialog(detail)}
-                              >
-                                查看内容
-                              </button>
-                            </td>
-                            <td className="px-4 py-2 text-sm text-gray-900">
-                              {detail.action === "内容变化" && detail.analysis_result ? (
+                              <div className="relative inline-block">
                                 <button 
                                   className="text-blue-600 hover:text-blue-800 text-xs whitespace-nowrap"
-                                  onClick={() => showAnalysisDialog(detail)}
+                                  onClick={() => showContentDialog(detail)}
                                 >
-                                  查看结果
+                                  查看内容
                                 </button>
-                              ) : (
-                                <span className="text-gray-400 text-xs">-</span>
-                              )}
+                                {detail.action === "内容变化" && detail.analysis_result && isImportantChange(detail) && (
+                                  <div className="absolute -top-1 -right-2 w-2 h-2 bg-red-500 rounded-full"></div>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan={6} className="px-4 py-4 text-sm text-center text-gray-500">
+                          <td colSpan={5} className="px-4 py-4 text-sm text-center text-gray-500">
                             暂无详情数据
-                                </td>
-                              </tr>
-                            )
-                        ) : (
-                          <tr>
-                            <td colSpan={6} className="px-4 py-4 text-sm text-center text-gray-500">
+                          </td>
+                        </tr>
+                      )
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-4 text-sm text-center text-gray-500">
                           请选择一条监控记录查看详情
-                            </td>
-                          </tr>
-                        )}
+                        </td>
+                      </tr>
+                    )}
                       </tbody>
                     </table>
                   </div>
@@ -492,8 +782,13 @@ export default function MonitoringResults({
 
           <div className="mt-6 flex justify-end">
             <button
-              className="bg-[#ECEEFF] text-[#3A48FB] border border-[#3A48FB] hover:bg-[#3A48FB] hover:text-white px-4 py-2 rounded-lg transition-colors"
-              disabled={!selectedItem.last_monitor_time || !hasRecords}
+              className="bg-[#ECEEFF] text-[#3A48FB] border border-[#3A48FB] hover:bg-[#3A48FB] hover:text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!selectedRecord || selectedRecordDetails.length === 0}
+              onClick={() => {
+                if (selectedItem && selectedRecord && selectedRecordDetails.length > 0) {
+                  exportMonitoringResults(selectedItem, selectedRecord, selectedRecordDetails);
+                }
+              }}
             >
               导出监测结果
             </button>
@@ -517,23 +812,74 @@ export default function MonitoringResults({
           background: #a8a8a8;
         }
         
+        /* 添加表格样式 */
+        :global(.prose table) {
+          width: 100%;
+          table-layout: auto;
+          border-collapse: collapse;
+        }
+        
+        :global(.prose td),
+        :global(.prose th) {
+          min-width: 100px;
+          padding: 8px;
+          border: 1px solid #e5e7eb;
+          white-space: normal;
+          word-break: break-word;
+          position: relative;
+          overflow: visible;
+          vertical-align: top;
+        }
+
+        :global(.prose td br) {
+          display: block;
+          content: '';
+          margin: 4px 0;
+        }
+        
+        :global(.prose thead th) {
+          background-color: #f9fafb;
+          font-weight: 500;
+        }
+
+        /* 添加链接样式 */
+        :global(.prose a) {
+          color: #2563eb;
+          text-decoration: underline;
+          word-break: break-all;
+          position: relative;
+          z-index: 1;
+        }
+
+        :global(.prose a:hover) {
+          color: #1d4ed8;
+        }
+
+        :global(.prose td > a) {
+          display: inline-block;
+          max-width: 100%;
+        }
+        
         /* Tooltip 样式 */
         .tooltip {
           position: relative;
           display: inline-block;
+          width: 100%;
           cursor: pointer;
         }
         
-        .tooltip .tooltiptext {
+        .tooltip .tooltiptext-top {
           visibility: hidden;
-          width: 300px;
+          width: auto;
+          min-width: 200px;
+          max-width: 400px;
           background-color: #333;
           color: #fff;
           text-align: left;
           border-radius: 6px;
-          padding: 10px;
+          padding: 8px 12px;
           position: absolute;
-          z-index: 1;
+          z-index: 20;
           bottom: 125%;
           left: 50%;
           transform: translateX(-50%);
@@ -541,15 +887,24 @@ export default function MonitoringResults({
           transition: opacity 0.3s;
           font-size: 12px;
           line-height: 1.4;
-          max-height: 200px;
-          overflow-y: auto;
-          white-space: pre-wrap;
-          word-break: break-word;
+          white-space: normal;
+          word-break: break-all;
         }
         
-        .tooltip:hover .tooltiptext {
+        .tooltip:hover .tooltiptext-top {
           visibility: visible;
           opacity: 1;
+        }
+
+        .tooltip .tooltiptext-top::after {
+          content: "";
+          position: absolute;
+          top: 100%;
+          left: 50%;
+          margin-left: -5px;
+          border-width: 5px;
+          border-style: solid;
+          border-color: #333 transparent transparent transparent;
         }
       `}</style>
     </div>
