@@ -10,7 +10,7 @@ interface QianwenConfig {
 
 // 默认配置
 const defaultConfig: QianwenConfig = {
-  apiKey: 'sk-96807c7e95144f15ac8c0c8cd7e96a49', // 使用提供的API密钥
+  apiKey: 'sk-388ecdc2c6cd436bb6c29d0131b5866a', // 使用提供的API密钥
   apiUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation',
   model: 'qwen-max-latest', // 使用最新的模型名称
 };
@@ -245,7 +245,6 @@ export async function compareResultsWithQianwen(
       
       if (hasContentChanged) {
         hasChanges = true;
-        // 只有在内容确实发生变化时，才使用通义千问进行分析
         try {
           // 使用通义千问分析内容变化
           const analysis = await analyzeContentChanges(
@@ -279,7 +278,6 @@ export async function compareResultsWithQianwen(
             formattedAnalysis += '\n\n**⚠️ 注意：这是一个重要变化**';
           }
           
-          // 添加到变化列表，将分析结果放在 analysis_result 字段中
           changes.push({
             ...newDetail,
             old_content: oldDetail.new_content,
@@ -290,7 +288,6 @@ export async function compareResultsWithQianwen(
         } catch (error) {
           console.error(`使用通义千问分析页面 ${newDetail.page} 的变化时出错:`, error);
           
-          // 出错时使用默认比较方式
           changes.push({
             ...newDetail,
             old_content: oldDetail.new_content,
@@ -310,19 +307,64 @@ export async function compareResultsWithQianwen(
         });
       }
     } else {
-      // 新增的页面，标记为内容变化
+      // 新增的页面，使用通义千问分析内容
       newPagesCount++;
       hasChanges = true;
-      changes.push({
-        ...newDetail,
-        new_content: newDetail.new_content,
-        analysis_result: "**分析结果**：新增页面",
-        action: "内容变化"
-      });
+      try {
+        // 使用通义千问分析新增内容
+        const analysis = await analyzeContentChanges(
+          "这是新增页面，无历史内容",
+          newDetail.new_content
+        );
+        
+        // 检查分析结果是否有效
+        if (!analysis || !analysis.summary) {
+          throw new Error('通义千问返回的分析结果无效');
+        }
+        
+        // 格式化分析结果为Markdown
+        let formattedAnalysis = "### 新增页面分析\n\n";
+        
+        // 添加变化区域
+        if (analysis.changes && analysis.changes.length > 0) {
+          analysis.changes.forEach((change, index) => {
+            formattedAnalysis += `### 内容区域 ${index + 1}：${change.area}\n`;
+            formattedAnalysis += `- **主要内容**：${change.content}\n`;
+            formattedAnalysis += `- **内容定位**：${change.reason}\n`;
+            formattedAnalysis += `- **建议**：${change.suggestion}\n\n`;
+          });
+        }
+        
+        // 添加总结
+        formattedAnalysis += `### 总结\n${analysis.summary}`;
+        
+        // 如果是重要内容，在总结中标注
+        if (analysis.hasSignificantChanges) {
+          formattedAnalysis += '\n\n**⚠️ 注意：这是重要内容**';
+        }
+        
+        changes.push({
+          ...newDetail,
+          old_content: "新增页面",
+          new_content: newDetail.new_content,
+          analysis_result: formattedAnalysis,
+          action: "内容变化"
+        });
+      } catch (error) {
+        console.error(`使用通义千问分析新增页面 ${newDetail.page} 时出错:`, error);
+        
+        changes.push({
+          ...newDetail,
+          old_content: "新增页面",
+          new_content: newDetail.new_content,
+          analysis_result: `**分析失败**：无法使用通义千问分析新增内容，请手动查看。\n错误信息：${error instanceof Error ? error.message : String(error)}`,
+          action: "内容变化"
+        });
+      }
     }
   }
   
-  // 查找删除的页面
+  // 查找删除的页面（简化处理，不进行内容分析）
   for (const oldDetail of oldDetails) {
     const stillExists = newDetails.some(d => d.page === oldDetail.page);
     if (!stillExists) {
@@ -347,7 +389,11 @@ export async function compareResultsWithQianwen(
     if (deletedPagesCount > 0) {
       summaryParts.push(`删除${deletedPagesCount}个页面`);
     }
-    const contentChanges = changes.filter(d => d.action === "内容变化" && !d.new_content.includes("页面已删除") && !d.analysis_result?.includes("新增页面")).length;
+    const contentChanges = changes.filter(d => 
+      d.action === "内容变化" && 
+      !d.new_content.includes("页面已删除") && 
+      d.old_content !== "新增页面"
+    ).length;
     if (contentChanges > 0) {
       summaryParts.push(`${contentChanges}处内容变化`);
     }

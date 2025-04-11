@@ -579,7 +579,7 @@ async function findModule(page: any, module: string): Promise<{ moduleFound: boo
   };
 }
 
-// 修改 processSubmenus 函数，直接处理子菜单
+// 修改 processSubmenus 函数
 async function processSubmenus(
   page: any,
   module: string,
@@ -588,8 +588,7 @@ async function processSubmenus(
   details: MonitoringDetail[],
   rank: number,
   context: any
-): Promise<number> {
-  // 获取一级菜单下的所有子菜单
+): Promise<{ currentRank: number; stopped: boolean }> {
   const subMenuLinks = await page.evaluate((targetModule: string) => {
     // 找到目标一级菜单项
     const level1Items = document.querySelectorAll('li.nav-item.level1');
@@ -654,27 +653,25 @@ async function processSubmenus(
 
   if (!subMenuLinks || subMenuLinks.length === 0) {
     console.log(`未找到子菜单: ${moduleText}`);
-    return currentRank;
+    return { currentRank, stopped: false };
   }
 
   console.log(`找到 ${subMenuLinks.length} 个子菜单，开始处理...`);
 
   // 处理每个子菜单
   for (const link of subMenuLinks) {
-    // 检查监控状态
-    if (!await checkMonitoringStatus(item.id, false)) {
-      throw new Error('监控项已停止或被删除');
+    // 每处理一个子菜单前检查监控状态
+    if (!await checkMonitoringStatus(item.id)) {
+      console.log('监控已停止，正在清理资源...');
+      return { currentRank, stopped: true };
     }
 
     try {
-      // 构建完整的页面路径用于日志显示
       const fullPath = [moduleText, ...link.path].join(' > ');
       console.log(`正在爬取: ${fullPath}`);
 
-      // 使用传入的 context 创建新页面
       const subPage = await context.newPage();
       
-      // 如果是相对链接，转为绝对链接
       let fullUrl = link.href;
       if (!fullUrl.startsWith('http')) {
         const currentUrl = page.url();
@@ -682,12 +679,22 @@ async function processSubmenus(
         fullUrl = new URL(fullUrl, baseUrl).href;
       }
 
+      // 加载页面前再次检查状态
+      if (!await checkMonitoringStatus(item.id)) {
+        await subPage.close();
+        return { currentRank, stopped: true };
+      }
+
       await loadPageWithFallback(subPage, fullUrl);
 
-      // 获取内容
+      // 提取内容前再次检查状态
+      if (!await checkMonitoringStatus(item.id)) {
+        await subPage.close();
+        return { currentRank, stopped: true };
+      }
+
       const { markdownContent } = await extractContentAsMarkdown(subPage);
       
-      // 添加到监控详情
       details.push({
         item_id: item.id,
         rank: currentRank++,
@@ -698,7 +705,6 @@ async function processSubmenus(
         action: markdownContent && markdownContent !== "无内容" ? "内容变化" : "无变化"
       });
       
-      // 关闭子页面
       await subPage.close();
     } catch (error) {
       console.error(`处理子菜单 ${link.text} 时出错:`, error);
@@ -715,7 +721,7 @@ async function processSubmenus(
     }
   }
 
-  return currentRank;
+  return { currentRank, stopped: false };
 }
 
 // 添加执行锁
@@ -808,44 +814,87 @@ const scrapeHuaweiCloud = async (item: MonitoringItem): Promise<{
   record: MonitoringRecord;
   details: MonitoringDetail[];
 }> => {
-  // 尝试获取执行锁
   if (!await acquireExecutionLock(item.id)) {
     throw new Error('监控任务已在执行中');
   }
 
-  const browser = await chromium.launch({
-    headless: true
-  });
-
-  const context = await browser.newContext();
+  let browser = null;
+  let context = null;
   const details: MonitoringDetail[] = [];
   let currentRank = 1;
+  let monitoringStopped = false;
 
   try {
-    // 初始检查监控项状态（不输出日志）
-    if (!await checkMonitoringStatus(item.id, false)) {
-      throw new Error('监控项已停止或被删除');
+    if (!await checkMonitoringStatus(item.id)) {
+      monitoringStopped = true;
+      return {
+        record: {
+          id: new Date().getTime().toString(),
+          item_id: item.id,
+          rank: 1,
+          date: new Date().toISOString().split('T')[0],
+          status: "监测已停止",
+          summary: "监测已被手动停止"
+        },
+        details
+      };
     }
 
+    browser = await chromium.launch({
+      headless: true
+    });
+
+    context = await browser.newContext();
     const page = await context.newPage();
     
+    // 访问页面前检查状态
+    if (!await checkMonitoringStatus(item.id)) {
+      monitoringStopped = true;
+      return {
+        record: {
+          id: new Date().getTime().toString(),
+          item_id: item.id,
+          rank: 1,
+          date: new Date().toISOString().split('T')[0],
+          status: "监测已停止",
+          summary: "监测已被手动停止"
+        },
+        details
+      };
+    }
+
     console.log(`开始访问文档首页: ${item.url}`);
     await loadPageWithFallback(page, item.url);
     
     const pageTitle = await page.title();
     console.log(`已进入文档: ${pageTitle}`);
     
-    // 检查 modules 是否存在
     if (!item.modules || item.modules.length === 0) {
+      // 提取内容前检查状态
+      if (!await checkMonitoringStatus(item.id)) {
+        monitoringStopped = true;
+        return {
+          record: {
+            id: new Date().getTime().toString(),
+            item_id: item.id,
+            rank: 1,
+            date: new Date().toISOString().split('T')[0],
+            status: "监测已停止",
+            summary: "监测已被手动停止"
+          },
+          details
+        };
+      }
+
       console.log('未指定监控模块，将爬取整个页面');
       const { markdownContent } = await extractContentAsMarkdown(page);
       
-                  details.push({
-                          item_id: item.id,
-        rank: currentRank++,  // 使用 currentRank
+      details.push({
+        item_id: item.id,
+        rank: currentRank++,
         page: pageTitle || '主页面',
         link: item.url,
-                          old_content: "首次监测",
+        old_content: "首次监测",
         new_content: markdownContent,
         action: markdownContent && markdownContent !== "无内容" ? "内容变化" : "无变化"
       });
@@ -853,88 +902,71 @@ const scrapeHuaweiCloud = async (item: MonitoringItem): Promise<{
       const now = new Date();
       const record: MonitoringRecord = {
         id: now.getTime().toString(),
-                          item_id: item.id,
-        rank: 1,  // 新记录总是设置为 rank 1
+        item_id: item.id,
+        rank: 1,
         date: now.toISOString().split('T')[0],
         status: "监测成功",
         summary: "首次监测，发现 1 个页面"
       };
 
-      // 在返回结果之前清理历史记录
       await cleanupHistoryRecords(item.id);
-      
       return { record, details };
     }
 
-    // 遍历用户选择的模块
     for (const module of item.modules) {
       try {
-        // 每处理一个模块前检查监控项状态（不输出日志）
-        if (!await checkMonitoringStatus(item.id, false)) {
-          throw new Error('监控项已停止或被删除');
+        // 处理每个模块前检查状态
+        if (!await checkMonitoringStatus(item.id)) {
+          monitoringStopped = true;
+          break;
         }
 
         console.log(`\n开始处理模块: ${module}`);
         
-        // 查找模块并获取内容
         const { moduleFound, moduleText, moduleLink, moduleContent } = await findModule(page, module);
         
         if (moduleFound) {
-          try {
-            // 如果有模块内容，先添加到监控详情中
-            if (moduleContent) {
-              details.push({
-                item_id: item.id,
-                rank: currentRank++,
-                page: moduleText,
-                link: moduleLink || item.url,
-                old_content: "首次监测",
-                new_content: moduleContent,
-                action: "内容变化"
-              });
-            }
+          if (moduleContent) {
+            details.push({
+              item_id: item.id,
+              rank: currentRank++,
+              page: moduleText,
+              link: moduleLink || item.url,
+              old_content: "首次监测",
+              new_content: moduleContent,
+              action: "内容变化"
+            });
+          }
 
-            // 在处理子菜单之前再次检查状态（不输出日志）
-            if (!await checkMonitoringStatus(item.id, false)) {
-              throw new Error('监控项已停止或被删除');
-            }
+          // 处理子菜单前检查状态
+          if (!await checkMonitoringStatus(item.id)) {
+            monitoringStopped = true;
+            break;
+          }
 
-            // 处理子菜单并更新当前序号
-            try {
-              currentRank = await processSubmenus(page, module, moduleText, item, details, currentRank, context);
-            } catch (subMenuError: unknown) {
-              if (subMenuError instanceof Error && subMenuError.message === '监控项已停止或被删除') {
-                throw subMenuError;
-              }
-              console.error('处理子菜单时出错:', subMenuError);
-            }
-          } catch (moduleProcessError: unknown) {
-            if (moduleProcessError instanceof Error && moduleProcessError.message === '监控项已停止或被删除') {
-              throw moduleProcessError;
-            }
-            console.error(`处理模块内容时出错:`, moduleProcessError);
-        }
-      } else {
-        console.log(`未找到模块: ${module}`);
-        details.push({
-          item_id: item.id,
-            rank: currentRank++,  // 使用 currentRank
-          page: module,
-          link: item.url,
-          old_content: "首次监测",
-          new_content: `未找到"${module}"模块`,
+          const result = await processSubmenus(page, module, moduleText, item, details, currentRank, context);
+          currentRank = result.currentRank;
+          if (result.stopped) {
+            monitoringStopped = true;
+            break;
+          }
+        } else {
+          console.log(`未找到模块: ${module}`);
+          details.push({
+            item_id: item.id,
+            rank: currentRank++,
+            page: module,
+            link: item.url,
+            old_content: "首次监测",
+            new_content: `未找到"${module}"模块`,
             action: "无变化"
           });
         }
-      } catch (moduleError: unknown) {
-        if (moduleError instanceof Error && moduleError.message === '监控项已停止或被删除') {
-          throw moduleError;
-        }
+      } catch (moduleError) {
         console.error(`处理模块 ${module} 时出错:`, moduleError);
-        
         details.push({
           item_id: item.id,
-          rank: currentRank++,  // 使用 currentRank
+          rank: currentRank++,
           page: module,
           link: item.url,
           old_content: "首次监测",
@@ -944,46 +976,64 @@ const scrapeHuaweiCloud = async (item: MonitoringItem): Promise<{
       }
     }
     
-    console.log(`\n爬取完成，共发现 ${details.length} 个页面`);
-    
     const now = new Date();
-    const record: MonitoringRecord = {
-      id: now.getTime().toString(),
-      item_id: item.id,
-      rank: 1,  // 新记录总是设置为 rank 1
-      date: now.toISOString().split('T')[0],
-      status: details.length > 0 ? "监测成功" : "监测失败",
-      summary: details.length > 0 ? `首次监测，发现 ${details.length} 个页面` : "没有发现任何页面"
-    };
+    let record: MonitoringRecord;
     
-    // 在返回结果之前清理历史记录
+    if (monitoringStopped) {
+      record = {
+        id: now.getTime().toString(),
+        item_id: item.id,
+        rank: 1,
+        date: now.toISOString().split('T')[0],
+        status: "监测已停止",
+        summary: `监测已被手动停止，已处理 ${details.length} 个页面`
+      };
+    } else {
+      console.log(`\n爬取完成，共发现 ${details.length} 个页面`);
+      record = {
+        id: now.getTime().toString(),
+        item_id: item.id,
+        rank: 1,
+        date: now.toISOString().split('T')[0],
+        status: details.length > 0 ? "监测成功" : "监测失败",
+        summary: details.length > 0 ? `首次监测，发现 ${details.length} 个页面` : "没有发现任何页面"
+      };
+    }
+    
     await cleanupHistoryRecords(item.id);
-    
     return { record, details };
-  } catch (error: unknown) {
+  } catch (error) {
     console.error('华为云抓取错误:', error);
     
     const now = new Date();
     const record: MonitoringRecord = {
       id: now.getTime().toString(),
       item_id: item.id,
-      rank: 1,  // 新记录总是设置为 rank 1
+      rank: 1,
       date: now.toISOString().split('T')[0],
       status: "监测失败",
-      summary: error instanceof Error && error.message === '监控项已停止或被删除'
-        ? "监控已停止" 
-        : `抓取失败: ${error instanceof Error ? error.message : String(error)}`
+      summary: `抓取失败: ${error instanceof Error ? error.message : String(error)}`
     };
     
-    // 即使出错也要清理历史记录
     await cleanupHistoryRecords(item.id);
-    
     return { record, details };
   } finally {
-    // 释放执行锁
+    // 确保资源被正确清理
+    if (context) {
+      try {
+        await context.close();
+      } catch (e) {
+        console.error('关闭context时出错:', e);
+      }
+    }
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        console.error('关闭browser时出错:', e);
+      }
+    }
     await releaseExecutionLock(item.id);
-    await context.close();
-    await browser.close();
   }
 };
 
