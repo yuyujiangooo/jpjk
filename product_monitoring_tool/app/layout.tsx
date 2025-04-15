@@ -5,6 +5,11 @@ export const metadata: Metadata = {
   title: '竞品监控工具',
   description: '监控竞品文档变化',
   generator: 'v0.dev',
+  icons: {
+    icon: '/logo.png',
+    shortcut: '/logo.png',
+    apple: '/logo.png',
+  },
 }
 
 export default function RootLayout({
