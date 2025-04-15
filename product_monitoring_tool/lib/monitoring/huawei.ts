@@ -426,59 +426,70 @@ const MAX_RETRIES = 3;
 const BASE_TIMEOUT = 60000; // 60秒
 const RETRY_DELAY = 3000; // 3秒
 
-// 优化的页面加载函数
-async function loadPageWithFallback(page: any, url: string, options = {}) {
-  // 检查 URL 是否有效
-  if (!url || url === 'javascript:' || !url.startsWith('http')) {
-    console.log(`跳过无效URL: ${url}`);
-    return false;
-  }
-
-  try {
-    // 首先尝试使用 domcontentloaded
-    await page.goto(url, { 
-      waitUntil: 'domcontentloaded',
-      timeout: BASE_TIMEOUT 
-    });
-
-    try {
-      // 尝试等待主要内容加载，但设置较短的超时
-      await Promise.race([
-        page.waitForSelector('.main-content', { timeout: 10000 }),
-        page.waitForSelector('.help-content', { timeout: 10000 }),
-        page.waitForSelector('.content', { timeout: 10000 }),
-        page.waitForSelector('article', { timeout: 10000 })
-      ]);
-    } catch (selectorError) {
-      console.log('内容选择器等待超时，继续处理');
-    }
-
-    // 给页面一个短暂的额外时间加载
-    await page.waitForTimeout(2000);
-    return true;
-  } catch (error) {
-    console.error(`页面加载失败: ${error}`);
-    return false;
-  }
+/**
+ * 重试操作的配置接口
+ */
+interface RetryConfig {
+  maxRetries: number;
+  retryDelay: number;
+  baseTimeout: number;
 }
 
+/**
+ * 重试操作的结果接口
+ */
+interface RetryResult<T> {
+  success: boolean;
+  data?: T;
+  error?: Error;
+  attempts: number;
+}
+
+/**
+ * 对异步操作进行重试的通用函数
+ * @param operation - 要重试的异步操作
+ * @param name - 操作的名称，用于日志记录
+ * @param url - 相关的URL，用于日志记录
+ * @param config - 重试配置（可选）
+ * @returns 返回操作的结果
+ * @throws 如果所有重试都失败，则抛出最后一个错误
+ */
 async function retryOperation<T>(
   operation: () => Promise<T>,
   name: string,
-  url: string
+  url: string,
+  config: Partial<RetryConfig> = {}
 ): Promise<T> {
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  const {
+    maxRetries = MAX_RETRIES,
+    retryDelay = RETRY_DELAY,
+    baseTimeout = BASE_TIMEOUT
+  } = config;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await operation();
+      const result = await operation();
+      console.log(`${name} (${url}) 操作成功，用时 ${attempt} 次尝试`);
+      return result;
     } catch (error) {
       console.error(`处理${name} (${url}) 第 ${attempt} 次尝试失败:`, error);
-      if (attempt === MAX_RETRIES) {
-        throw error;
+      
+      if (attempt === maxRetries) {
+        const finalError = error instanceof Error 
+          ? error 
+          : new Error(`未知错误: ${String(error)}`);
+        
+        finalError.message = `${name} 在 ${maxRetries} 次尝试后仍然失败: ${finalError.message}`;
+        throw finalError;
       }
-      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * attempt));
+      
+      const currentDelay = retryDelay * attempt;
+      console.log(`等待 ${currentDelay}ms 后进行第 ${attempt + 1} 次尝试...`);
+      await new Promise(resolve => setTimeout(resolve, currentDelay));
     }
   }
-  throw new Error(`在 ${MAX_RETRIES} 次尝试后仍然失败`);
+  
+  throw new Error(`在 ${maxRetries} 次尝试后仍然失败`);
 }
 
 // 检查监控项状态的函数
@@ -802,6 +813,48 @@ async function cleanupHistoryRecords(itemId: string): Promise<void> {
     }
   } catch (error) {
     console.error('清理历史记录时出错:', error);
+  }
+}
+
+/**
+ * 优化的页面加载函数
+ * @param page - Puppeteer 页面实例
+ * @param url - 要加载的URL
+ * @param options - 加载选项
+ * @returns 是否成功加载页面
+ */
+async function loadPageWithFallback(page: any, url: string, options = {}) {
+  // 检查 URL 是否有效
+  if (!url || url === 'javascript:' || !url.startsWith('http')) {
+    console.log(`跳过无效URL: ${url}`);
+    return false;
+  }
+
+  try {
+    // 首先尝试使用 domcontentloaded
+    await page.goto(url, { 
+      waitUntil: 'domcontentloaded',
+      timeout: BASE_TIMEOUT 
+    });
+
+    try {
+      // 尝试等待主要内容加载，但设置较短的超时
+      await Promise.race([
+        page.waitForSelector('.main-content', { timeout: 10000 }),
+        page.waitForSelector('.help-content', { timeout: 10000 }),
+        page.waitForSelector('.content', { timeout: 10000 }),
+        page.waitForSelector('article', { timeout: 10000 })
+      ]);
+    } catch (selectorError) {
+      console.log('内容选择器等待超时，继续处理');
+    }
+
+    // 给页面一个短暂的额外时间加载
+    await page.waitForTimeout(2000);
+    return true;
+  } catch (error) {
+    console.error(`页面加载失败: ${error}`);
+    return false;
   }
 }
 

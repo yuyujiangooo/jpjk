@@ -4,6 +4,7 @@
 import type { MonitoringItem, MonitoringRecord, MonitoringDetail, TABLES } from "@/lib/monitoring"
 import scrapeHuaweiCloud from "./monitoring/huawei"
 import scrapeAlibabaCloud from "./monitoring/alibaba"
+import scrapeCTyun from "./monitoring/ctyun"
 import { compareResultsWithQianwen } from "./monitoring/qianwen"
 import { supabase } from "@/lib/supabase"
 import { sendMonitoringResultEmail } from "./email-service"
@@ -468,24 +469,26 @@ export const db = {
   // Run monitoring process
   runMonitoring: async (itemId: string) => {
     try {
-      // 获取监控项
-      const { data: item, error: itemError } = await supabase
-        .from('monitoring_items')
-        .select('*')
-        .eq('id', itemId)
-        .single()
-      
-      if (itemError || !item) {
-        console.error(`获取监控项 ${itemId} 失败:`, itemError)
-        return null
+      const item = await db.getMonitoringItemById(itemId)
+      if (!item) {
+        throw new Error('监控项不存在')
       }
-      
-      const monitoringItem = safeItemCast(item)
-      if (!monitoringItem) {
-        console.error(`获取监控项 ${itemId} 失败: 无效的数据格式`)
-        return null
+
+      let result
+      switch (item.vendor) {
+        case '华为云':
+          result = await scrapeHuaweiCloud(item)
+          break
+        case '阿里云':
+          result = await scrapeAlibabaCloud(item)
+          break
+        case '天翼云':
+          result = await scrapeCTyun(item)
+          break
+        default:
+          throw new Error('不支持的厂商类型')
       }
-      
+
       // 更新最后监控时间
       const now = new Date()
       
@@ -508,7 +511,7 @@ export const db = {
           last_monitor_time: formattedDate,
           status: "正常运行",
           updated_at: now.toISOString(),
-          next_monitor_time: calculateNextMonitorTime(monitoringItem.frequency || "30 天/次", formattedDate)
+          next_monitor_time: calculateNextMonitorTime(item.frequency || "30 天/次", formattedDate)
             .toLocaleString("zh-CN", {
               timeZone: "Asia/Shanghai",
               year: "numeric",
@@ -545,320 +548,51 @@ export const db = {
       let newDetails: Array<Record<string, any>> = []
       
       try {
-        // 根据不同的云服务商使用不同的抓取方法
-        if (monitoringItem.vendor === "华为云") {
-          console.log(`开始抓取华为云产品: ${monitoringItem.name}`)
-          const result = await scrapeHuaweiCloud(monitoringItem)
-          
-          // 获取最近的监控记录和详情
-          const { data: recentRecordsData, error: recordsError } = await supabase
-            .from('monitoring_records')
+        // 获取最近的监控记录和详情
+        const { data: recentRecordsData, error: recordsError } = await supabase
+          .from('monitoring_records')
+          .select('*')
+          .eq('item_id', itemId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+        
+        if (recordsError) {
+          console.error(`获取最近监控记录失败:`, recordsError)
+        }
+        
+        // 获取最近一次监控的详情
+        let oldDetails: any[] = []
+        if (recentRecordsData && recentRecordsData.length > 0) {
+          const latestRecordId = recentRecordsData[0].id
+          const { data: oldDetailsData, error: detailsError } = await supabase
+            .from('monitoring_details')
             .select('*')
-            .eq('item_id', itemId)
-            .order('created_at', { ascending: false })
-            .limit(1)
+            .eq('record_id', latestRecordId)
+            .order('rank', { ascending: true })
           
-          if (recordsError) {
-            console.error(`获取最近监控记录失败:`, recordsError)
-          }
-          
-          // 获取最近一次监控的详情
-          let oldDetails: any[] = []
-          if (recentRecordsData && recentRecordsData.length > 0) {
-            const latestRecordId = recentRecordsData[0].id
-            const { data: oldDetailsData, error: detailsError } = await supabase
-              .from('monitoring_details')
-              .select('*')
-              .eq('record_id', latestRecordId)
-              .order('rank', { ascending: true })
-            
-            if (detailsError) {
-              console.error(`获取旧监控详情失败:`, detailsError)
-            } else {
-              oldDetails = oldDetailsData || []
-            }
-          }
-          
-          // 如果不是首次监控，比较结果找出变化
-          if (oldDetails && oldDetails.length > 0) {
-            // 使用通义千问增强的比较功能
-            const { changes, recordSummary } = await compareResultsWithQianwen(safeDetailsCast(oldDetails), result.details)
-            
-            // 过滤出有变化的记录
-            const significantChanges = changes.filter(
-              detail => detail.action === "内容变化"
-            )
-            
-            if (significantChanges.length > 0) {
-              // 更新监控记录的摘要
-              newRecord.summary = recordSummary
-            } else {
-              newRecord.summary = "未发现变化"
-            }
-            
-            // 获取最近的监控记录数量作为新记录的 rank
-            const { data: recordCount, error: countError } = await supabase
-              .from('monitoring_records')
-              .select('id', { count: 'exact' })
-              .eq('item_id', itemId);
-            
-            if (countError) {
-              console.error(`获取监控记录数量失败:`, countError);
-            }
-            
-            // 使用记录数量 + 1 作为新记录的 rank
-            const newRank = (recordCount?.length || 0) + 1;
-            
-            // 更新 newRecord 的 rank
-            newRecord = {
-              ...newRecord,
-              rank: newRank
-            };
-            
-            // 保存监控记录
-            const { data: recordData, error: recordError } = await supabase
-              .from('monitoring_records')
-              .insert([newRecord])
-              .select()
-            
-            if (recordError) {
-              console.error(`保存监控记录失败:`, recordError)
-              return null
-            }
-            
-            const savedRecord = recordData[0]
-            
-            // 为每个详情添加record_id，保持完整内容
-            newDetails = changes.map(detail => ({
-              ...detail,
-              item_id: itemId,
-              record_id: savedRecord.id,
-              created_at: now.toISOString(),
-              old_content: detail.old_content || "无内容",
-              new_content: detail.new_content || "无内容"
-            }))
+          if (detailsError) {
+            console.error(`获取旧监控详情失败:`, detailsError)
           } else {
-            // 首次监控
-            newRecord.summary = `首次监测，发现 ${result.details.length} 个页面`
-            
-            // 获取最近的监控记录数量作为新记录的 rank
-            const { data: recordCount, error: countError } = await supabase
-              .from('monitoring_records')
-              .select('id', { count: 'exact' })
-              .eq('item_id', itemId);
-            
-            if (countError) {
-              console.error(`获取监控记录数量失败:`, countError);
-            }
-            
-            // 使用记录数量 + 1 作为新记录的 rank
-            const newRank = (recordCount?.length || 0) + 1;
-            
-            // 更新 newRecord 的 rank
-            newRecord = {
-              ...newRecord,
-              rank: newRank
-            };
-            
-            // 保存监控记录
-            const { data: recordData, error: recordError } = await supabase
-              .from('monitoring_records')
-              .insert([newRecord])
-              .select()
-            
-            if (recordError) {
-              console.error(`保存监控记录失败:`, recordError)
-              return null
-            }
-            
-            const savedRecord = recordData[0]
-            
-            // 为每个详情添加record_id，保持完整内容
-            newDetails = result.details.map(detail => ({
-              ...detail,
-              item_id: itemId,
-              record_id: savedRecord.id,
-              created_at: now.toISOString(),
-              old_content: detail.old_content || "首次监测",
-              new_content: detail.new_content || "无内容"
-            }))
+            oldDetails = oldDetailsData || []
           }
+        }
+        
+        // 如果不是首次监控，比较结果找出变化
+        if (oldDetails && oldDetails.length > 0) {
+          // 使用通义千问增强的比较功能
+          const { changes, recordSummary } = await compareResultsWithQianwen(safeDetailsCast(oldDetails), result.details)
           
-          // 保存新的监控详情
-          if (newDetails.length > 0) {
-            console.log(`准备保存 ${newDetails.length} 条监控详情`)
-            
-            // 移除可能存在的 id 字段，让数据库自动生成
-            const detailsToInsert = newDetails.map(({ id, ...detail }) => detail)
-            
-            const { error: detailsError } = await supabase
-              .from('monitoring_details')
-              .insert(detailsToInsert)
-            
-            if (detailsError) {
-              console.error(`保存监控详情失败:`, detailsError)
-            } else {
-              console.log(`成功保存 ${newDetails.length} 条监控详情`)
-            }
-          }
-        } else if (monitoringItem.vendor === "阿里云") {
-          console.log(`开始抓取阿里云产品: ${monitoringItem.name}`)
-          const result = await scrapeAlibabaCloud(monitoringItem)
+          // 过滤出有变化的记录
+          const significantChanges = changes.filter(
+            detail => detail.action === "内容变化"
+          )
           
-          // 获取最近的监控记录和详情
-          const { data: recentRecordsData, error: recordsError } = await supabase
-            .from('monitoring_records')
-            .select('*')
-            .eq('item_id', itemId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-          
-          if (recordsError) {
-            console.error(`获取最近监控记录失败:`, recordsError)
-          }
-          
-          // 获取最近一次监控的详情
-          let oldDetails: any[] = []
-          if (recentRecordsData && recentRecordsData.length > 0) {
-            const latestRecordId = recentRecordsData[0].id
-            const { data: oldDetailsData, error: detailsError } = await supabase
-              .from('monitoring_details')
-              .select('*')
-              .eq('record_id', latestRecordId)
-              .order('rank', { ascending: true })
-            
-            if (detailsError) {
-              console.error(`获取旧监控详情失败:`, detailsError)
-            } else {
-              oldDetails = oldDetailsData || []
-            }
-          }
-          
-          // 如果不是首次监控，比较结果找出变化
-          if (oldDetails && oldDetails.length > 0) {
-            // 使用通义千问增强的比较功能
-            const { changes, recordSummary } = await compareResultsWithQianwen(safeDetailsCast(oldDetails), result.details)
-            
-            // 过滤出有变化的记录
-            const significantChanges = changes.filter(
-              detail => detail.action === "内容变化"
-            )
-            
-            if (significantChanges.length > 0) {
-              // 更新监控记录的摘要
-              newRecord.summary = recordSummary
-            } else {
-              newRecord.summary = "未发现变化"
-            }
-            
-            // 获取最近的监控记录数量作为新记录的 rank
-            const { data: recordCount, error: countError } = await supabase
-              .from('monitoring_records')
-              .select('id', { count: 'exact' })
-              .eq('item_id', itemId);
-            
-            if (countError) {
-              console.error(`获取监控记录数量失败:`, countError);
-            }
-            
-            // 使用记录数量 + 1 作为新记录的 rank
-            const newRank = (recordCount?.length || 0) + 1;
-            
-            // 更新 newRecord 的 rank
-            newRecord = {
-              ...newRecord,
-              rank: newRank
-            };
-            
-            // 保存监控记录
-            const { data: recordData, error: recordError } = await supabase
-              .from('monitoring_records')
-              .insert([newRecord])
-              .select()
-            
-            if (recordError) {
-              console.error(`保存监控记录失败:`, recordError)
-              return null
-            }
-            
-            const savedRecord = recordData[0]
-            
-            // 为每个详情添加record_id，保持完整内容
-            newDetails = changes.map(detail => ({
-              ...detail,
-              item_id: itemId,
-              record_id: savedRecord.id,
-              created_at: now.toISOString(),
-              old_content: detail.old_content || "无内容",
-              new_content: detail.new_content || "无内容"
-            }))
+          if (significantChanges.length > 0) {
+            // 更新监控记录的摘要
+            newRecord.summary = recordSummary
           } else {
-            // 首次监控
-            newRecord.summary = `首次监测，发现 ${result.details.length} 个页面`
-            
-            // 获取最近的监控记录数量作为新记录的 rank
-            const { data: recordCount, error: countError } = await supabase
-              .from('monitoring_records')
-              .select('id', { count: 'exact' })
-              .eq('item_id', itemId);
-            
-            if (countError) {
-              console.error(`获取监控记录数量失败:`, countError);
-            }
-            
-            // 使用记录数量 + 1 作为新记录的 rank
-            const newRank = (recordCount?.length || 0) + 1;
-            
-            // 更新 newRecord 的 rank
-            newRecord = {
-              ...newRecord,
-              rank: newRank
-            };
-            
-            // 保存监控记录
-            const { data: recordData, error: recordError } = await supabase
-              .from('monitoring_records')
-              .insert([newRecord])
-              .select()
-            
-            if (recordError) {
-              console.error(`保存监控记录失败:`, recordError)
-              return null
-            }
-            
-            const savedRecord = recordData[0]
-            
-            // 为每个详情添加record_id，保持完整内容
-            newDetails = result.details.map(detail => ({
-              ...detail,
-              item_id: itemId,
-              record_id: savedRecord.id,
-              created_at: now.toISOString(),
-              old_content: detail.old_content || "首次监测",
-              new_content: detail.new_content || "无内容"
-            }))
+            newRecord.summary = "未发现变化"
           }
-          
-          // 保存新的监控详情
-          if (newDetails.length > 0) {
-            console.log(`准备保存 ${newDetails.length} 条监控详情`)
-            
-            // 移除可能存在的 id 字段，让数据库自动生成
-            const detailsToInsert = newDetails.map(({ id, ...detail }) => detail)
-            
-            const { error: detailsError } = await supabase
-              .from('monitoring_details')
-              .insert(detailsToInsert)
-            
-            if (detailsError) {
-              console.error(`保存监控详情失败:`, detailsError)
-            } else {
-              console.log(`成功保存 ${newDetails.length} 条监控详情`)
-            }
-          }
-        } else {
-          // 其他云服务商暂时使用模拟数据
-          newRecord.summary = "模拟监控数据"
           
           // 获取最近的监控记录数量作为新记录的 rank
           const { data: recordCount, error: countError } = await supabase
@@ -892,38 +626,77 @@ export const db = {
           
           const savedRecord = recordData[0]
           
-          // 创建模拟详情
-          if (monitoringItem.modules && Array.isArray(monitoringItem.modules)) {
-            newDetails = monitoringItem.modules.map((module: string, index: number) => ({
-              id: undefined, // 让数据库自动生成
-              item_id: itemId,
-              record_id: savedRecord.id,
-              rank: index + 1,
-              page: module,
-              link: `${monitoringItem.url}#${module}`,
-              old_content: "首次监测",
-              new_content: "模拟监控内容",
-              action: "提示",
-              created_at: now.toISOString(),
-            }))
-            
-            // 保存新的监控详情
-            if (newDetails.length > 0) {
-              console.log(`准备保存 ${newDetails.length} 条监控详情`)
-              
-              // 移除可能存在的 id 字段，让数据库自动生成
-              const detailsToInsert = newDetails.map(({ id, ...detail }) => detail)
-              
-              const { error: detailsError } = await supabase
-                .from('monitoring_details')
-                .insert(detailsToInsert)
-              
-              if (detailsError) {
-                console.error(`保存监控详情失败:`, detailsError)
-              } else {
-                console.log(`成功保存 ${newDetails.length} 条监控详情`)
-              }
-            }
+          // 为每个详情添加record_id，保持完整内容
+          newDetails = changes.map(detail => ({
+            ...detail,
+            item_id: itemId,
+            record_id: savedRecord.id,
+            created_at: now.toISOString(),
+            old_content: detail.old_content || "无内容",
+            new_content: detail.new_content || "无内容"
+          }))
+        } else {
+          // 首次监控
+          newRecord.summary = `首次监测，发现 ${result.details.length} 个页面`
+          
+          // 获取最近的监控记录数量作为新记录的 rank
+          const { data: recordCount, error: countError } = await supabase
+            .from('monitoring_records')
+            .select('id', { count: 'exact' })
+            .eq('item_id', itemId);
+          
+          if (countError) {
+            console.error(`获取监控记录数量失败:`, countError);
+          }
+          
+          // 使用记录数量 + 1 作为新记录的 rank
+          const newRank = (recordCount?.length || 0) + 1;
+          
+          // 更新 newRecord 的 rank
+          newRecord = {
+            ...newRecord,
+            rank: newRank
+          };
+          
+          // 保存监控记录
+          const { data: recordData, error: recordError } = await supabase
+            .from('monitoring_records')
+            .insert([newRecord])
+            .select()
+          
+          if (recordError) {
+            console.error(`保存监控记录失败:`, recordError)
+            return null
+          }
+          
+          const savedRecord = recordData[0]
+          
+          // 为每个详情添加record_id，保持完整内容
+          newDetails = result.details.map(detail => ({
+            ...detail,
+            item_id: itemId,
+            record_id: savedRecord.id,
+            created_at: now.toISOString(),
+            old_content: detail.old_content || "首次监测",
+            new_content: detail.new_content || "无内容"
+          }))
+        }
+        
+        // 保存新的监控详情
+        if (newDetails.length > 0) {
+          console.log(`准备保存 ${newDetails.length} 条监控详情`)
+          
+          // 移除可能存在的 id 字段，让数据库自动生成
+          const detailsToInsert = newDetails.map(({ id, ...detail }) => detail)
+          
+          const { error: detailsError } = await supabase
+            .from('monitoring_details')
+            .insert(detailsToInsert)
+          
+          if (detailsError) {
+            console.error(`保存监控详情失败:`, detailsError)
+          } else {
+            console.log(`成功保存 ${newDetails.length} 条监控详情`)
           }
         }
       } catch (error) {
@@ -988,7 +761,7 @@ export const db = {
       }
       
       // 发送邮件通知
-      await sendMonitoringResultEmail(monitoringItem, latestRecord, latestDetails || [])
+      await sendMonitoringResultEmail(item, latestRecord, latestDetails || [])
       
       // 广播监控结果
       broadcast({
@@ -999,7 +772,7 @@ export const db = {
       })
       
       return {
-        item: monitoringItem,
+        item: item,
         record: latestRecord,
         details: latestDetails || [],
       }

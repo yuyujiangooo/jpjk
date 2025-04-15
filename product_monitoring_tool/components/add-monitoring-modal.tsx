@@ -34,7 +34,7 @@ export default function AddMonitoringModal({
   onAddItem,
   nameError,
 }: AddMonitoringModalProps) {
-  const vendors = ["阿里云", "华为云", "腾讯云", "天翼云"]
+  const vendors = ["阿里云", "华为云", "天翼云"]
   const [emailEnabled, setEmailEnabled] = useState(false)
   const [emailRecipients, setEmailRecipients] = useState("")
   const [emailError, setEmailError] = useState("")
@@ -83,12 +83,12 @@ export default function AddMonitoringModal({
         <div className="p-4">
           <div className="mb-3">
             <label className="block text-xs font-medium text-gray-700 mb-1">选择竞品：</label>
-            <div className="grid grid-cols-4 gap-1">
+            <div className="grid grid-cols-3 gap-2">
               {vendors.map((vendor) => (
                 <button
                   key={vendor}
                   onClick={() => onSelectVendor(vendor)}
-                  className={`border rounded-lg py-1 px-2 text-center text-sm ${
+                  className={`border rounded-lg py-2 px-4 text-center text-sm ${
                     selectedVendor === vendor
                       ? "border-blue-medium bg-blue-50 text-blue-dark"
                       : "border-gray-300 hover:bg-gray-50"

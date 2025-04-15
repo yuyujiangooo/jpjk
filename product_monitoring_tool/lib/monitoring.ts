@@ -11,7 +11,6 @@ export interface MonitoringItem {
   email_notification?: boolean
   email_recipients?: string[]
   is_monitoring?: boolean
-  is_executing?: boolean
   created_at?: string
   updated_at?: string
 }

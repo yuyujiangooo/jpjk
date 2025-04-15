@@ -13,5 +13,4 @@ export interface MonitoringItem {
   email_notification?: boolean;
   email_recipients?: string;
   last_execution_result?: any;  // 存储最后一次执行的结果
-  last_execution_error?: string;  // 存储最后一次执行的错误信息
 } 

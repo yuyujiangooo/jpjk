@@ -2,7 +2,8 @@
 
 import type { MonitoringItem } from "@/lib/monitoring"
 import { Search, Plus, Trash2 } from "lucide-react"
-import { useState } from "react"
+import { useState, useMemo } from "react"
+import { FixedSizeList as List } from 'react-window'
 import ConfirmDeleteModal from "./confirm-delete-modal"
 
 interface MonitoringListProps {
@@ -10,34 +11,95 @@ interface MonitoringListProps {
   onSelectItem: (item: MonitoringItem) => void
   onAddClick: () => void
   onDeleteItem: (id: string) => void
+  onStopMonitoring: (id: string) => void
   selectedItemId?: string
+  isAdmin: boolean
+  executingItemIds: Set<string>
 }
+
+// 列表项组件
+const MonitoringItemRow = ({ data, index, style }: any) => {
+  const { items, selectedItemId, onSelectItem, handleDeleteClick } = data;
+  const item = items[index];
+
+  return (
+    <div style={style}>
+      <div
+        onClick={() => onSelectItem(item)}
+        className={`flex items-center justify-between p-4 rounded-lg cursor-pointer border-l-4 transition-all m-2
+          hover:bg-[#ECEEFF] hover:shadow-md
+          ${
+            selectedItemId === item.id
+              ? "bg-[#ECEEFF] border-blue-dark shadow-md"
+              : "bg-white border-transparent"
+          }`}
+      >
+        <div>
+          <h3 className="font-medium text-blue-dark">{item.name}</h3>
+          <p className="text-sm text-gray-500">{item.url}</p>
+        </div>
+        <button
+          className="text-gray-400 hover:text-gray-600"
+          onClick={(e) => handleDeleteClick(e, item)}
+        >
+          <Trash2 size={18} />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export default function MonitoringList({
   items,
   onSelectItem,
   onAddClick,
   onDeleteItem,
+  onStopMonitoring,
   selectedItemId,
+  isAdmin,
+  executingItemIds,
 }: MonitoringListProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [itemToDelete, setItemToDelete] = useState<MonitoringItem | null>(null)
 
-  const filteredItems = searchTerm
-    ? items.filter((item) => item.name.toLowerCase().includes(searchTerm.toLowerCase()))
-    : items
+  const filteredItems = useMemo(() => {
+    if (!searchTerm) return items;
+    const lowercaseSearchTerm = searchTerm.toLowerCase();
+    return items.filter((item) => 
+      item.name.toLowerCase().includes(lowercaseSearchTerm)
+    );
+  }, [items, searchTerm]);
 
   const handleDeleteClick = (e: React.MouseEvent, item: MonitoringItem) => {
     e.stopPropagation()
+    if (!isAdmin) {
+      alert('只有管理员可以删除监控项')
+      return
+    }
+
+    if (executingItemIds.has(item.id)) {
+      onStopMonitoring(item.id)
+    }
     setItemToDelete(item)
   }
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (itemToDelete) {
+      if (executingItemIds.has(itemToDelete.id)) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
       onDeleteItem(itemToDelete.id)
       setItemToDelete(null)
     }
   }
+
+  // 列表项数据
+  const itemData = useMemo(() => ({
+    items: filteredItems,
+    selectedItemId,
+    onSelectItem,
+    handleDeleteClick,
+  }), [filteredItems, selectedItemId, onSelectItem]);
 
   return (
     <>
@@ -61,65 +123,44 @@ export default function MonitoringList({
               </button>
             </div>
 
-            <button
-              onClick={onAddClick}
-              className="ml-2 flex items-center justify-center bg-[#ECEEFF] text-[#3A48FB] border border-[#3A48FB] rounded-lg px-4 py-2 hover:bg-[#3A48FB] hover:text-white transition-colors"
-            >
-              <Plus size={18} className="mr-1" />
-              <span>添加</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
-          <div className="p-4 space-y-2">
-            {filteredItems.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">没有找到匹配的监控项</div>
-            ) : (
-              filteredItems.map((item) => (
-                <div
-                  key={item.id}
-                  onClick={() => onSelectItem(item)}
-                  className={`flex items-center justify-between p-4 rounded-lg cursor-pointer border-l-4 transition-all
-                    hover:bg-[#ECEEFF] hover:shadow-md
-                    ${
-                      selectedItemId === item.id
-                        ? "bg-[#ECEEFF] border-blue-dark shadow-md"
-                        : "bg-white border-transparent"
-                    }`}
-                >
-                  <div>
-                    <h3 className="font-medium text-blue-dark">{item.name}</h3>
-                    <p className="text-sm text-gray-500">{item.url}</p>
+            <div className="relative ml-2">
+              <button
+                onClick={onAddClick}
+                disabled={executingItemIds.size > 0}
+                className={`flex items-center justify-center rounded-lg px-4 py-2 transition-colors group ${
+                  executingItemIds.size > 0
+                    ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                    : 'bg-[#ECEEFF] text-[#3A48FB] border border-[#3A48FB] hover:bg-[#3A48FB] hover:text-white'
+                }`}
+              >
+                <Plus size={18} className="mr-1" />
+                <span>添加</span>
+                {executingItemIds.size > 0 && (
+                  <div className="absolute invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity duration-200 bottom-full right-0 mb-2 px-3 py-2 bg-gray-800 text-white text-xs rounded-lg whitespace-nowrap z-50">
+                    监控执行中，暂时无法添加新的监控项
+                    <div className="absolute -bottom-1 right-4 transform w-2 h-2 bg-gray-800 rotate-45"></div>
                   </div>
-                  <button
-                    className="text-gray-400 hover:text-gray-600"
-                    onClick={(e) => handleDeleteClick(e, item)}
-                  >
-                    <Trash2 size={18} />
-                  </button>
-                </div>
-              ))
-            )}
+                )}
+              </button>
+            </div>
           </div>
         </div>
 
-        <style jsx>{`
-          .custom-scrollbar::-webkit-scrollbar {
-            width: 8px;
-          }
-          .custom-scrollbar::-webkit-scrollbar-track {
-            background: #F5F5F5;
-            border-radius: 4px;
-          }
-          .custom-scrollbar::-webkit-scrollbar-thumb {
-            background: #BBBBBB;
-            border-radius: 4px;
-          }
-          .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-            background: #999999;
-          }
-        `}</style>
+        <div className="flex-1 overflow-hidden">
+          {filteredItems.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">没有找到匹配的监控项</div>
+          ) : (
+            <List
+              height={window.innerHeight - 250} // 调整高度以适应实际情况
+              itemCount={filteredItems.length}
+              itemSize={88} // 每个项的高度
+              width="100%"
+              itemData={itemData}
+            >
+              {MonitoringItemRow}
+            </List>
+          )}
+        </div>
       </div>
 
       <ConfirmDeleteModal

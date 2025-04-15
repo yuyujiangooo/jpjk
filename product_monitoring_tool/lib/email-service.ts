@@ -243,7 +243,7 @@ export async function sendMonitoringResultEmail(
     // 添加查看链接和页脚
     content += `
           <div style="text-align:center;margin-top:30px;">
-            <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://100.71.37.7:3000'}/monitoring/${item.id}" class="btn">
+            <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://172.20.218.214:3000'}/monitoring/${item.id}" class="btn">
               查看完整详情
             </a>
           </div>

@@ -25,6 +25,7 @@ interface MonitoringResultsProps {
   isLoadingRecords?: boolean
   onLoadMore?: () => void
   hasMoreRecords?: boolean
+  executingItemIds: Set<string>  // 新增：执行中的监控项ID集合
 }
 
 export default function MonitoringResults({
@@ -36,38 +37,28 @@ export default function MonitoringResults({
   isLoadingRecords,
   onLoadMore,
   hasMoreRecords,
+  executingItemIds,  // 新增：执行中的监控项ID集合
 }: MonitoringResultsProps) {
   const [selectedRecord, setSelectedRecord] = useState<MonitoringRecord | null>(null)
   const [selectedRecordDetails, setSelectedRecordDetails] = useState<MonitoringDetail[]>([])
   const [isLoadingRecordDetails, setIsLoadingRecordDetails] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [detailsCache, setDetailsCache] = useState<Record<string, MonitoringDetail[]>>({})
-  const [executingItems, setExecutingItems] = useState<Set<string>>(new Set())  // 使用Set存储正在执行的监控项ID
 
   // 修改开始监控的处理函数
   const handleStartMonitoring = async () => {
     if (!selectedItem?.id) return;
     
     // 检查该监控项是否正在执行
-    if (executingItems.has(selectedItem.id)) {
+    if (executingItemIds.has(selectedItem.id)) {
       console.log('该监控项正在执行中');
       return;
     }
-
-    // 添加到执行集合
-    setExecutingItems(prev => new Set(prev).add(selectedItem.id));
 
     try {
       await onStartMonitoring?.();
     } catch (error) {
       console.error('监控执行失败:', error);
-    } finally {
-      // 从执行集合中移除
-      setExecutingItems(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(selectedItem.id);
-        return newSet;
-      });
     }
   };
 
@@ -77,12 +68,6 @@ export default function MonitoringResults({
     
     try {
       await onStopMonitoring?.();
-      // 从执行集合中移除
-      setExecutingItems(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(selectedItem.id);
-        return newSet;
-      });
     } catch (error) {
       console.error('停止监控失败:', error);
     }
@@ -520,11 +505,11 @@ export default function MonitoringResults({
           <div className="flex items-center gap-3 mb-4">
             <h3 className="text-lg font-medium text-blue-dark">{selectedItem.name}</h3>
             <Button
-              onClick={executingItems.has(selectedItem?.id || '') ? handleStopMonitoring : handleStartMonitoring}
+              onClick={executingItemIds.has(selectedItem?.id || '') ? handleStopMonitoring : handleStartMonitoring}
               className={`flex items-center justify-center bg-[#ECEEFF] text-[#3A48FB] border border-[#3A48FB] rounded-lg px-4 py-2 hover:bg-[#3A48FB] hover:text-white transition-colors`}
             >
-              <span className="mr-2">{executingItems.has(selectedItem?.id || '') ? '⏸' : '▶'}</span>
-              {executingItems.has(selectedItem?.id || '') ? "停止监控" : "开始监控"}
+              <span className="mr-2">{executingItemIds.has(selectedItem?.id || '') ? '⏸' : '▶'}</span>
+              {executingItemIds.has(selectedItem?.id || '') ? "停止监控" : "开始监控"}
             </Button>
           </div>
 
@@ -543,7 +528,7 @@ export default function MonitoringResults({
             <div>
               <div className="text-sm text-gray-500">监控状态：</div>
               <div className="flex items-center mt-1">
-              {selectedItem.is_monitoring ? (
+              {executingItemIds.has(selectedItem?.id || '') ? (
                   <div className="flex items-center text-green-600">
                     <div className="w-2 h-2 bg-green-600 rounded-full mr-2 animate-pulse" />
                     <span>监控中</span>
@@ -672,7 +657,7 @@ export default function MonitoringResults({
                     ) : (
                       <tr>
                         <td colSpan={4} className="px-4 py-4 text-sm text-center text-gray-500">
-                          {selectedItem.is_monitoring
+                          {executingItemIds.has(selectedItem?.id || '')
                             ? "监控已开始，首次监控记录将在监控完成后显示"
                             : '暂无监控记录，请点击"开始监控"按钮开始监控'}
                         </td>

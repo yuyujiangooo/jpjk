@@ -17,6 +17,7 @@
 
 # misc
 .DS_Store
+../.DS_Store
 *.pem
 
 # debug
@@ -27,6 +28,7 @@ yarn-error.log*
 
 # env files
 .env*
+../.env.local
 
 # vercel
 .vercel
@@ -34,9 +36,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-
-# local env files
-.env*.local
 
 # logs
 logs/
@@ -50,4 +49,4 @@ ecosystem.config.js
 .vscode/
 
 # deploy scripts
-deploy/
+../deploy/

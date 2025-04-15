@@ -114,6 +114,9 @@ export default function Home() {
   const [pageSize] = useState(10);
   const [totalPages, setTotalPages] = useState(1);
 
+  // 添加执行中的监控项状态管理
+  const [executingItemIds, setExecutingItemIds] = useState<Set<string>>(new Set())
+
   // 初始化 SSE 连接
   useEffect(() => {
     const sse = new EventSource('/api/monitoring/events')
@@ -360,8 +363,7 @@ export default function Home() {
     const vendorUrls = {
       华为云: "https://support.huaweicloud.com/eip/index.html",
       阿里云: "https://help.aliyun.com/zh/eip/?spm=a2c4g.11186623.0.0.57606dc2o5T6lX",
-      腾讯云: "https://cloud.tencent.com/document/product/eip",
-      天翼云: "https://www.ctyun.cn/document/eip",
+      天翼云: "https://www.ctyun.cn/document/10026753",
     }
 
     setProductUrl(vendorUrls[vendor as keyof typeof vendorUrls])
@@ -493,6 +495,9 @@ export default function Home() {
     if (!item) return
 
     try {
+      // 添加到执行集合
+      setExecutingItemIds(prev => new Set(prev).add(item.id))
+
       const response = await fetch(`/api/monitoring/${item.id}/start`, {
         method: "POST",
       })
@@ -504,28 +509,11 @@ export default function Home() {
       const result = await response.json()
 
       if (result.success) {
-        // 更新监控项状态
-        const updatedItems = monitoringItems.map((item) =>
-          item.id === result.item.id ? { ...item, is_monitoring: true } : item,
-        )
-        setMonitoringItems(updatedItems)
-
-        // 更新选中项状态
-        const updatedSelectedItem = { ...item, is_monitoring: true }
-        setSelectedItem(updatedSelectedItem)
-
         // 运行初始监控
         const monitoringResult = await runMonitoring(item.id)
 
         if (monitoringResult.success && monitoringResult.result) {
           const { item: updatedItem, record: newRecord, details: newDetails } = monitoringResult.result
-
-          // 更新监控项列表
-          const updatedItemsWithResults = updatedItems.map((item) => 
-            item.id === updatedItem.id ? updatedItem : item
-          )
-          setMonitoringItems(updatedItemsWithResults)
-          setSelectedItem(updatedItem)
 
           // 更新缓存和当前显示的记录
           if (newRecord) {
@@ -551,6 +539,13 @@ export default function Home() {
     } catch (error) {
       console.error("Error starting monitoring:", error)
       alert("启动监控失败")
+    } finally {
+      // 从执行集合中移除
+      setExecutingItemIds(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(item.id)
+        return newSet
+      })
     }
   }
 
@@ -563,7 +558,7 @@ export default function Home() {
 
     try {
       // 先取消正在执行的监控任务
-      monitoringScheduler.cancelExecution(id);
+      monitoringScheduler.cancelExecution(id)
 
       const response = await fetch(`/api/monitoring/${id}/stop`, {
         method: "POST",
@@ -576,17 +571,12 @@ export default function Home() {
       const result = await response.json()
 
       if (result.success) {
-        // Update the item in the list
-        const updatedItems = monitoringItems.map((item) =>
-          item.id === id ? { ...item, is_monitoring: false } : item,
-        )
-
-        const updatedSelectedItem = { ...selectedItem, is_monitoring: false }
-        setMonitoringItems(updatedItems)
-        setSelectedItem(updatedSelectedItem)
-        
-        // 更新调度器中的监控项状态
-        monitoringScheduler.addOrUpdateItem(updatedSelectedItem)
+        // 从执行集合中移除
+        setExecutingItemIds(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(id)
+          return newSet
+        })
       }
     } catch (error) {
       console.error("Error stopping monitoring:", error)
@@ -679,7 +669,10 @@ export default function Home() {
             onSelectItem={handleSelectItem}
             onAddClick={handleAddClick}
             onDeleteItem={handleDeleteItem}
+            onStopMonitoring={handleStopMonitoring}
             selectedItemId={selectedItem?.id}
+            isAdmin={isAdmin}
+            executingItemIds={executingItemIds}
           />
 
           <MonitoringResults
@@ -691,6 +684,7 @@ export default function Home() {
             isLoadingRecords={isLoadingRecords}
             onLoadMore={handleLoadMoreRecords}
             hasMoreRecords={recordsPage * RECORDS_PER_PAGE < (monitoringRecords?.length || 0)}
+            executingItemIds={executingItemIds}
           />
         </div>
       </main>
