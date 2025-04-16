@@ -3,7 +3,6 @@
 import type { MonitoringItem } from "@/lib/monitoring"
 import { Search, Plus, Trash2 } from "lucide-react"
 import { useState, useMemo } from "react"
-import { FixedSizeList as List } from 'react-window'
 import ConfirmDeleteModal from "./confirm-delete-modal"
 
 interface MonitoringListProps {
@@ -16,38 +15,6 @@ interface MonitoringListProps {
   isAdmin: boolean
   executingItemIds: Set<string>
 }
-
-// 列表项组件
-const MonitoringItemRow = ({ data, index, style }: any) => {
-  const { items, selectedItemId, onSelectItem, handleDeleteClick } = data;
-  const item = items[index];
-
-  return (
-    <div style={style}>
-      <div
-        onClick={() => onSelectItem(item)}
-        className={`flex items-center justify-between p-4 rounded-lg cursor-pointer border-l-4 transition-all m-2
-          hover:bg-[#ECEEFF] hover:shadow-md
-          ${
-            selectedItemId === item.id
-              ? "bg-[#ECEEFF] border-blue-dark shadow-md"
-              : "bg-white border-transparent"
-          }`}
-      >
-        <div>
-          <h3 className="font-medium text-blue-dark">{item.name}</h3>
-          <p className="text-sm text-gray-500">{item.url}</p>
-        </div>
-        <button
-          className="text-gray-400 hover:text-gray-600"
-          onClick={(e) => handleDeleteClick(e, item)}
-        >
-          <Trash2 size={18} />
-        </button>
-      </div>
-    </div>
-  );
-};
 
 export default function MonitoringList({
   items,
@@ -92,14 +59,6 @@ export default function MonitoringList({
       setItemToDelete(null)
     }
   }
-
-  // 列表项数据
-  const itemData = useMemo(() => ({
-    items: filteredItems,
-    selectedItemId,
-    onSelectItem,
-    handleDeleteClick,
-  }), [filteredItems, selectedItemId, onSelectItem]);
 
   return (
     <>
@@ -146,19 +105,36 @@ export default function MonitoringList({
           </div>
         </div>
 
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-auto">
           {filteredItems.length === 0 ? (
             <div className="text-center py-8 text-gray-500">没有找到匹配的监控项</div>
           ) : (
-            <List
-              height={window.innerHeight - 250} // 调整高度以适应实际情况
-              itemCount={filteredItems.length}
-              itemSize={88} // 每个项的高度
-              width="100%"
-              itemData={itemData}
-            >
-              {MonitoringItemRow}
-            </List>
+            <div className="py-2">
+              {filteredItems.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => onSelectItem(item)}
+                  className={`flex items-center justify-between p-4 rounded-lg cursor-pointer border-l-4 transition-all m-2
+                    hover:bg-[#ECEEFF] hover:shadow-md
+                    ${
+                      selectedItemId === item.id
+                        ? "bg-[#ECEEFF] border-blue-dark shadow-md"
+                        : "bg-white border-transparent"
+                    }`}
+                >
+                  <div>
+                    <h3 className="font-medium text-blue-dark">{item.name}</h3>
+                    <p className="text-sm text-gray-500">{item.url}</p>
+                  </div>
+                  <button
+                    className="text-gray-400 hover:text-gray-600"
+                    onClick={(e) => handleDeleteClick(e, item)}
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>
