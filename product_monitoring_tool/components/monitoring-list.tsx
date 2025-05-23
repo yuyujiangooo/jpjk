@@ -3,6 +3,7 @@
 import type { MonitoringItem } from "@/lib/monitoring"
 import { Search, Plus, Trash2 } from "lucide-react"
 import { useState, useMemo } from "react"
+import { FixedSizeList as List } from 'react-window'
 import ConfirmDeleteModal from "./confirm-delete-modal"
 
 interface MonitoringListProps {
@@ -14,7 +15,40 @@ interface MonitoringListProps {
   selectedItemId?: string
   isAdmin: boolean
   executingItemIds: Set<string>
+  isLoading: boolean
 }
+
+// 列表项组件
+const MonitoringItemRow = ({ data, index, style }: any) => {
+  const { items, selectedItemId, onSelectItem, handleDeleteClick } = data;
+  const item = items[index];
+
+  return (
+    <div style={style}>
+      <div
+        onClick={() => onSelectItem(item)}
+        className={`flex items-center justify-between p-4 rounded-lg cursor-pointer border-l-4 transition-all m-2
+          hover:bg-[#ECEEFF] hover:shadow-md w-[calc(100%-16px)]
+          ${
+            selectedItemId === item.id
+              ? "bg-[#ECEEFF] border-blue-dark shadow-md"
+              : "bg-white border-transparent"
+          }`}
+      >
+        <div className="flex-1 min-w-0">
+          <h3 className="font-medium text-blue-dark truncate">{item.name}</h3>
+          <p className="text-sm text-gray-500 truncate">{item.url}</p>
+        </div>
+        <button
+          className="text-gray-400 hover:text-gray-600 ml-2 flex-shrink-0"
+          onClick={(e) => handleDeleteClick(e, item)}
+        >
+          <Trash2 size={18} />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export default function MonitoringList({
   items,
@@ -25,6 +59,7 @@ export default function MonitoringList({
   selectedItemId,
   isAdmin,
   executingItemIds,
+  isLoading,
 }: MonitoringListProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [itemToDelete, setItemToDelete] = useState<MonitoringItem | null>(null)
@@ -60,6 +95,14 @@ export default function MonitoringList({
     }
   }
 
+  // 列表项数据
+  const itemData = useMemo(() => ({
+    items: filteredItems,
+    selectedItemId,
+    onSelectItem,
+    handleDeleteClick,
+  }), [filteredItems, selectedItemId, onSelectItem]);
+
   return (
     <>
       <div className="bg-[#F9FAFC] rounded-lg overflow-hidden shadow flex flex-col h-[calc(100vh-100px)]">
@@ -82,7 +125,7 @@ export default function MonitoringList({
               </button>
             </div>
 
-            <div className="relative ml-2">
+            <div className="ml-4">
               <button
                 onClick={onAddClick}
                 disabled={executingItemIds.size > 0}
@@ -105,36 +148,24 @@ export default function MonitoringList({
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto">
-          {filteredItems.length === 0 ? (
+        <div className="flex-1 overflow-hidden">
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center h-full">
+              <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+              <p className="text-gray-500">加载监控列表...</p>
+            </div>
+          ) : filteredItems.length === 0 ? (
             <div className="text-center py-8 text-gray-500">没有找到匹配的监控项</div>
           ) : (
-            <div className="py-2">
-              {filteredItems.map((item) => (
-                <div
-                  key={item.id}
-                  onClick={() => onSelectItem(item)}
-                  className={`flex items-center justify-between p-4 rounded-lg cursor-pointer border-l-4 transition-all m-2
-                    hover:bg-[#ECEEFF] hover:shadow-md
-                    ${
-                      selectedItemId === item.id
-                        ? "bg-[#ECEEFF] border-blue-dark shadow-md"
-                        : "bg-white border-transparent"
-                    }`}
-                >
-                  <div>
-                    <h3 className="font-medium text-blue-dark">{item.name}</h3>
-                    <p className="text-sm text-gray-500">{item.url}</p>
-                  </div>
-                  <button
-                    className="text-gray-400 hover:text-gray-600"
-                    onClick={(e) => handleDeleteClick(e, item)}
-                  >
-                    <Trash2 size={18} />
-                  </button>
-                </div>
-              ))}
-            </div>
+            <List
+              height={window.innerHeight - 250}
+              itemCount={filteredItems.length}
+              itemSize={88}
+              width="100%"
+              itemData={itemData}
+            >
+              {MonitoringItemRow}
+            </List>
           )}
         </div>
       </div>

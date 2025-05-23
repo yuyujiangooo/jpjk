@@ -8,6 +8,7 @@ import { monitoringScheduler } from "@/lib/monitoring/scheduler-service"
 import { utils, writeFile } from 'xlsx'
 import { marked } from 'marked'
 import DiffMatchPatch from 'diff-match-patch'
+import { createPortal } from "react-dom"
 
 // 为window添加全局函数类型
 declare global {
@@ -44,6 +45,10 @@ export default function MonitoringResults({
   const [isLoadingRecordDetails, setIsLoadingRecordDetails] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [detailsCache, setDetailsCache] = useState<Record<string, MonitoringDetail[]>>({})
+  // Tooltip 状态
+  const [tooltip, setTooltip] = useState<{visible: boolean, content: string, x: number, y: number}>(
+    { visible: false, content: '', x: 0, y: 0 }
+  );
 
   // 修改开始监控的处理函数
   const handleStartMonitoring = async () => {
@@ -495,6 +500,33 @@ export default function MonitoringResults({
     }
   }
 
+  // Tooltip渲染
+  const tooltipNode = tooltip.visible && typeof window !== 'undefined'
+    ? createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            left: tooltip.x,
+            top: tooltip.y,
+            zIndex: 9999,
+            background: '#333',
+            color: '#fff',
+            borderRadius: 8,
+            padding: '8px 16px',
+            fontSize: 14,
+            maxWidth: 400,
+            whiteSpace: 'pre-line',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+            pointerEvents: 'none',
+            transform: 'translate(-50%, -8px)'
+          }}
+        >
+          {tooltip.content}
+        </div>,
+        document.body
+      )
+    : null;
+
   return (
     <div className="bg-[#F9FAFC] rounded-lg overflow-hidden shadow flex flex-col h-[calc(100vh-100px)]">
       <div className="bg-gradient-blue-light text-white p-4">
@@ -624,11 +656,21 @@ export default function MonitoringResults({
                             )}
                           </td>
                           <td className="px-4 py-2 text-sm text-gray-900 max-w-[200px] truncate">
-                            <div className="tooltip">
-                              <span>{record.summary}</span>
-                              {record.summary && record.summary.length > 30 && (
-                                <span className="tooltiptext">{record.summary}</span>
-                              )}
+                            <div
+                              className="truncate block w-full"
+                              style={{ maxWidth: 180 }}
+                              onMouseEnter={e => {
+                                const rect = (e.target as HTMLElement).getBoundingClientRect();
+                                setTooltip({
+                                  visible: true,
+                                  content: record.summary,
+                                  x: rect.left + rect.width / 2,
+                                  y: rect.top - 8 // 上方8px
+                                });
+                              }}
+                              onMouseLeave={() => setTooltip({ ...tooltip, visible: false })}
+                            >
+                              {record.summary}
                             </div>
                           </td>
                             </tr>
@@ -780,6 +822,8 @@ export default function MonitoringResults({
           </div>
         </div>
 
+      {tooltipNode}
+
       <style jsx>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 8px;
@@ -865,15 +909,16 @@ export default function MonitoringResults({
           padding: 8px 12px;
           position: absolute;
           z-index: 20;
-          bottom: 125%;
+          bottom: 100%;
           left: 50%;
-          transform: translateX(-50%);
+          transform: translateX(-50%) translateY(-8px);
           opacity: 0;
           transition: opacity 0.3s;
           font-size: 12px;
           line-height: 1.4;
           white-space: normal;
           word-break: break-all;
+          pointer-events: none;
         }
         
         .tooltip:hover .tooltiptext-top {
