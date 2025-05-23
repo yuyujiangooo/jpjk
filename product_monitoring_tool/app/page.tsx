@@ -673,6 +673,7 @@ export default function Home() {
             selectedItemId={selectedItem?.id}
             isAdmin={isAdmin}
             executingItemIds={executingItemIds}
+            isLoading={isLoading}
           />
 
           <MonitoringResults

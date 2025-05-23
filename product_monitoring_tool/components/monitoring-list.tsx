@@ -15,7 +15,7 @@ interface MonitoringListProps {
   selectedItemId?: string
   isAdmin: boolean
   executingItemIds: Set<string>
-  isLoading: boolean
+  isLoading: boolean  // 添加加载状态属性
 }
 
 // 列表项组件
